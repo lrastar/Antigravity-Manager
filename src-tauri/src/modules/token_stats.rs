@@ -1096,6 +1096,18 @@ pub fn clear_stats(source: Option<&str>) -> Result<(), String> {
 }
 
 fn clear_stats_with_conn(conn: &mut Connection, source: Option<&str>) -> Result<(), String> {
+    clear_stats_with_conn_and_dir(
+        conn,
+        source,
+        crate::modules::native_token::get_conversations_dir().as_deref(),
+    )
+}
+
+pub(crate) fn clear_stats_with_conn_and_dir(
+    conn: &mut Connection,
+    source: Option<&str>,
+    baseline_dir: Option<&std::path::Path>,
+) -> Result<(), String> {
     let s = source.unwrap_or("proxy");
     if !matches!(s, "proxy" | "antigravity" | "all") {
         return Err(format!("Invalid token stats source: {s}"));
@@ -1110,7 +1122,7 @@ fn clear_stats_with_conn(conn: &mut Connection, source: Option<&str>) -> Result<
     if s == "antigravity" || s == "all" {
         tx.execute("DELETE FROM native_token_usage", []).map_err(|e| e.to_string())?;
         let now = chrono::Local::now().timestamp();
-        crate::modules::native_token::establish_baseline_with_conn(&tx, now)?;
+        crate::modules::native_token::establish_baseline_with_conn_and_dir(&tx, now, baseline_dir)?;
     }
 
     tx.commit().map_err(|e| e.to_string())?;

@@ -605,12 +605,25 @@ pub fn get_status_with_conn(conn: &Connection) -> Result<NativeCollectorStatus, 
 
 /// Enable or disable native collector
 pub fn set_enabled(enabled: bool) -> Result<(), String> {
-    let conn = crate::modules::token_stats::connect_db()?;
+    let mut conn = crate::modules::token_stats::connect_db()?;
     let now = chrono::Local::now().timestamp();
-    set_enabled_with_conn(&conn, enabled, now, get_conversations_dir().as_deref())
+    set_enabled_with_conn(&mut conn, enabled, now, get_conversations_dir().as_deref())
 }
 
 pub fn set_enabled_with_conn(
+    conn: &mut Connection,
+    enabled: bool,
+    now: i64,
+    conv_dir: Option<&Path>,
+) -> Result<(), String> {
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    set_enabled_in_transaction(&tx, enabled, now, conv_dir)?;
+    tx.commit().map_err(|e| e.to_string())
+}
+
+fn set_enabled_in_transaction(
     conn: &Connection,
     enabled: bool,
     now: i64,
@@ -623,8 +636,7 @@ pub fn set_enabled_with_conn(
                 [],
                 |row| row.get(0),
             )
-            .ok()
-            .flatten();
+            .map_err(|error| error.to_string())?;
 
         if let Some(dir) = conv_dir {
             establish_baseline_in_dir(conn, dir, now)?;
@@ -771,15 +783,23 @@ pub fn establish_baseline() -> Result<(), String> {
 }
 
 pub fn establish_baseline_with_conn(conn: &Connection, now: i64) -> Result<(), String> {
-    let _ = conn.execute(
+    establish_baseline_with_conn_and_dir(conn, now, get_conversations_dir().as_deref())
+}
+
+pub(crate) fn establish_baseline_with_conn_and_dir(
+    conn: &Connection,
+    now: i64,
+    conv_dir: Option<&Path>,
+) -> Result<(), String> {
+    conn.execute(
         "UPDATE native_collector_state
          SET baseline_established_at = COALESCE(baseline_established_at, ?1),
              enabled_since = ?1
          WHERE id = 1",
         params![now],
-    );
-    if let Some(conv_dir) = get_conversations_dir() {
-        establish_baseline_in_dir(conn, &conv_dir, now)?;
+    ).map_err(|e| e.to_string())?;
+    if let Some(conv_dir) = conv_dir {
+        establish_baseline_in_dir(conn, conv_dir, now)?;
     }
     Ok(())
 }
@@ -792,7 +812,7 @@ pub fn establish_baseline_in_dir(conn: &Connection, conv_dir: &Path, now: i64) -
 
     let entries = match std::fs::read_dir(conv_dir) {
         Ok(e) => e,
-        Err(_) => return Ok(()),
+        Err(error) => return Err(error.to_string()),
     };
 
     let mut stmt = conn
@@ -802,23 +822,23 @@ pub fn establish_baseline_in_dir(conn: &Connection, conv_dir: &Path, now: i64) -
         )
         .map_err(|e| e.to_string())?;
 
-    for entry in entries.flatten() {
+    for entry in entries {
+        let entry = entry.map_err(|error| error.to_string())?;
         let path = entry.path();
         if path.extension().and_then(|ext| ext.to_str()) == Some("db") {
-            if let Ok(output) = inspect_conversation_db(&path) {
-                for key in output.baseline_keys {
-                    let already_recorded: bool = conn
-                        .query_row(
-                            "SELECT COUNT(*) FROM native_token_usage WHERE record_key = ?1",
-                            params![key],
-                            |row| row.get::<_, i64>(0),
-                        )
-                        .map(|c| c > 0)
-                        .unwrap_or(false);
+            let output = inspect_conversation_db(&path)?;
+            for key in output.baseline_keys {
+                let already_recorded: bool = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM native_token_usage WHERE record_key = ?1",
+                        params![key],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .map(|c| c > 0)
+                    .map_err(|error| error.to_string())?;
 
-                    if !already_recorded {
-                        let _ = stmt.execute(params![key, now]);
-                    }
+                if !already_recorded {
+                    stmt.execute(params![key, now]).map_err(|error| error.to_string())?;
                 }
             }
         }
@@ -847,6 +867,18 @@ pub fn scan_conversations_in_dir(
     conv_dir: &Path,
     now: i64,
 ) -> Result<NativeCollectorStatus, String> {
+    scan_conversations_in_dir_inner(conn, conv_dir, now, || {})
+}
+
+fn scan_conversations_in_dir_inner<F>(
+    conn: &Connection,
+    conv_dir: &Path,
+    now: i64,
+    mut after_capture: F,
+) -> Result<NativeCollectorStatus, String>
+where
+    F: FnMut(),
+{
     // Verify collector is enabled and obtain time boundaries
     let (enabled, baseline_established_at, enabled_since): (bool, Option<i64>, Option<i64>) = conn
         .query_row(
@@ -913,6 +945,8 @@ pub fn scan_conversations_in_dir(
                             .map(|c| c > 0)
                             .unwrap_or(false);
 
+                        after_capture();
+
                         if !already_captured {
                             // 1. Reject if either record_key or slot_key (idx:session:gen_idx) is in baseline
                             let in_baseline: bool = conn
@@ -958,7 +992,22 @@ pub fn scan_conversations_in_dir(
                                 record_key, session_id, response_id, model, timestamp,
                                 input_tokens, cached_tokens, cache_write_tokens, output_tokens, reasoning_tokens,
                                 total_tokens, account_email, attribution_type, user_modified, raw_json, created_at, duration_ms
-                             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 0, ?14, ?15, ?16)
+                             ) SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 0, ?14, ?15, ?16
+                             WHERE EXISTS (
+                                SELECT 1 FROM native_collector_state state
+                                WHERE state.id = 1 AND state.enabled = 1
+                                  AND (
+                                    EXISTS (SELECT 1 FROM native_token_usage WHERE record_key = ?1)
+                                    OR (
+                                      NOT EXISTS (
+                                        SELECT 1 FROM native_baseline_records
+                                        WHERE record_key = ?1 OR record_key = ?18
+                                      )
+                                      AND ?5 >= COALESCE(state.enabled_since, state.baseline_established_at, ?15)
+                                      AND ?17 >= COALESCE(state.enabled_since, state.baseline_established_at, ?15)
+                                    )
+                                  )
+                             )
                              ON CONFLICT(record_key) DO UPDATE SET
                                 model = excluded.model,
                                 timestamp = excluded.timestamp,
@@ -998,7 +1047,9 @@ pub fn scan_conversations_in_dir(
                                 attribution_type,
                                 r.raw_json,
                                 now,
-                                r.duration_ms
+                                r.duration_ms,
+                                r.gen_start_time,
+                                slot_key
                             ],
                         );
 
@@ -2008,6 +2059,150 @@ mod tests {
         top
     }
 
+    fn create_single_generation_db(conv_dir: &Path, timestamp: u64, response_id: &str) {
+        std::fs::create_dir_all(conv_dir).unwrap();
+        let conn = Connection::open(conv_dir.join("session.db")).unwrap();
+        conn.execute("CREATE TABLE steps (idx INTEGER PRIMARY KEY, metadata BLOB)", [])
+            .unwrap();
+        conn.execute("CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, data BLOB)", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO steps (idx, metadata) VALUES (1, ?1), (2, ?2)",
+            params![
+                build_step_metadata(timestamp - 2),
+                build_step_metadata(timestamp)
+            ],
+        )
+        .unwrap();
+        let blob = build_gen_metadata_blob(
+            "gemini-3.8-flash",
+            1,
+            100,
+            50,
+            10,
+            20,
+            24,
+            5,
+            45,
+            Some(response_id),
+        );
+        conn.execute("INSERT INTO gen_metadata (idx, data) VALUES (1, ?1)", params![blob])
+            .unwrap();
+    }
+
+    #[test]
+    fn clear_during_inflight_scan_does_not_resurrect_record() {
+        let root = std::env::temp_dir()
+            .join(format!("ag_test_clear_race_{}", uuid::Uuid::new_v4()));
+        let conv_dir = root.join("conversations");
+        std::fs::create_dir_all(&root).unwrap();
+        create_single_generation_db(&conv_dir, 1_710_100_020, "resp_clear_race");
+        assert_eq!(
+            inspect_conversation_db(&conv_dir.join("session.db"))
+                .unwrap()
+                .records
+                .len(),
+            1
+        );
+        let stats_path = root.join("stats.db");
+        {
+            let mut conn = Connection::open(&stats_path).unwrap();
+            init_native_tables(&conn).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE token_usage (id INTEGER); CREATE TABLE token_stats_hourly (id INTEGER);",
+            )
+            .unwrap();
+            set_enabled_with_conn(&mut conn, true, 1_710_100_000, None).unwrap();
+            scan_conversations_in_dir(&conn, &conv_dir, 1_710_100_030).unwrap();
+        }
+
+        let scan_conn = Connection::open(&stats_path).unwrap();
+        let clear_conn = Connection::open(&stats_path).unwrap();
+        let (captured_tx, captured_rx) = std::sync::mpsc::channel();
+        let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+        let scan_dir = conv_dir.clone();
+        let scan_thread = std::thread::spawn(move || {
+            scan_conversations_in_dir_inner(
+                &scan_conn,
+                &scan_dir,
+                1_710_100_040,
+                || {
+                    let _ = captured_tx.send(());
+                    resume_rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+                },
+            )
+            .unwrap();
+        });
+        captured_rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let clear_dir = conv_dir.clone();
+        let clear_thread = std::thread::spawn(move || {
+            let mut clear_conn = clear_conn;
+            let result = crate::modules::token_stats::clear_stats_with_conn_and_dir(
+                &mut clear_conn,
+                Some("antigravity"),
+                Some(&clear_dir),
+            );
+            done_tx.send(result).unwrap();
+        });
+        let clear_result = done_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("clear should complete while the scan is paused after its stale read");
+        assert!(clear_result.is_ok());
+        resume_tx.send(()).unwrap();
+        scan_thread.join().unwrap();
+        clear_thread.join().unwrap();
+
+        let conn = Connection::open(&stats_path).unwrap();
+        let remaining: i64 = conn
+            .query_row("SELECT COUNT(*) FROM native_token_usage", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(remaining, 0, "a scan that started before clear must not resurrect the cleared record");
+        drop(conn);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn clear_rolls_back_when_baseline_insert_fails() {
+        let root = std::env::temp_dir()
+            .join(format!("ag_test_clear_baseline_error_{}", uuid::Uuid::new_v4()));
+        let conv_dir = root.join("conversations");
+        std::fs::create_dir_all(&root).unwrap();
+        create_single_generation_db(&conv_dir, 1_710_200_020, "resp_baseline_error");
+        assert_eq!(
+            inspect_conversation_db(&conv_dir.join("session.db"))
+                .unwrap()
+                .records
+                .len(),
+            1
+        );
+        let stats_path = root.join("stats.db");
+        let mut conn = Connection::open(&stats_path).unwrap();
+        init_native_tables(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE token_usage (id INTEGER);
+             CREATE TABLE token_stats_hourly (id INTEGER);
+             INSERT INTO native_token_usage (record_key, session_id, model, timestamp, created_at)
+                 VALUES ('existing', 's', 'gemini', 1, 1);
+             CREATE TRIGGER reject_native_baseline BEFORE INSERT ON native_baseline_records
+                 BEGIN SELECT RAISE(ABORT, 'injected baseline failure'); END;",
+        )
+        .unwrap();
+
+        let result = crate::modules::token_stats::clear_stats_with_conn_and_dir(
+            &mut conn, Some("antigravity"), Some(&conv_dir),
+        );
+        assert!(result.is_err(), "baseline SQL failures must fail the clear operation");
+        let remaining: i64 = conn
+            .query_row("SELECT COUNT(*) FROM native_token_usage", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(remaining, 1, "failed baseline work must roll the delete back");
+
+        drop(conn);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
     #[test]
     fn test_proto_parser_and_exact_field_mapping_p1() {
         // Verify [P1] fix:
@@ -2095,9 +2290,9 @@ mod tests {
                 .unwrap();
         }
 
-        let stats_conn = Connection::open_in_memory().unwrap();
+        let mut stats_conn = Connection::open_in_memory().unwrap();
         init_native_tables(&stats_conn).unwrap();
-        set_enabled_with_conn(&stats_conn, true, 1_700_000_000, None).unwrap();
+        set_enabled_with_conn(&mut stats_conn, true, 1_700_000_000, None).unwrap();
 
         let status = scan_conversations_in_dir(&stats_conn, &tmp_dir, 1_710_000_200).unwrap();
         let _ = std::fs::remove_dir_all(&tmp_dir);
@@ -2135,10 +2330,10 @@ mod tests {
                 .unwrap();
         }
 
-        let stats_conn = Connection::open_in_memory().unwrap();
+        let mut stats_conn = Connection::open_in_memory().unwrap();
         init_native_tables(&stats_conn).unwrap();
         let enable_time = 1_710_000_500;
-        set_enabled_with_conn(&stats_conn, true, enable_time, Some(&tmp_dir)).unwrap();
+        set_enabled_with_conn(&mut stats_conn, true, enable_time, Some(&tmp_dir)).unwrap();
 
         // Now (after enablement, at t = 1_710_000_510), the in-flight generation idx 1 completes!
         {
@@ -2267,9 +2462,9 @@ mod tests {
             conn.execute("INSERT INTO gen_metadata (idx, data) VALUES (1, ?1)", params![blob]).unwrap();
         }
 
-        let stats_conn = Connection::open_in_memory().unwrap();
+        let mut stats_conn = Connection::open_in_memory().unwrap();
         init_native_tables(&stats_conn).unwrap();
-        set_enabled_with_conn(&stats_conn, true, 1_710_000_500, None).unwrap();
+        set_enabled_with_conn(&mut stats_conn, true, 1_710_000_500, None).unwrap();
         open_verified_observation_window_with_conn(
             &stats_conn,
             "current@example.com",
@@ -2428,9 +2623,9 @@ mod tests {
                 .unwrap();
         }
 
-        let stats_conn = Connection::open_in_memory().unwrap();
+        let mut stats_conn = Connection::open_in_memory().unwrap();
         init_native_tables(&stats_conn).unwrap();
-        set_enabled_with_conn(&stats_conn, true, 1_710_001_000, None).unwrap();
+        set_enabled_with_conn(&mut stats_conn, true, 1_710_001_000, None).unwrap();
 
         let id = ClassicProcessIdentity {
             main_pid: 555,
