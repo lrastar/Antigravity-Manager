@@ -1603,6 +1603,19 @@ pub use crate::modules::token_stats::{
 pub use crate::modules::native_token::{NativeCollectorStatus, NativeRecordsPage};
 
 #[tauri::command]
+pub async fn get_token_stats_dashboard(
+    start_time: i64,
+    end_time: i64,
+    bucket: String,
+) -> Result<crate::modules::token_stats::TokenStatsDashboard, String> {
+    tokio::task::spawn_blocking(move || {
+        crate::modules::token_stats::get_dashboard_stats(start_time, end_time, &bucket)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 pub async fn get_token_stats_minute(
     minutes: i64,
     step_minutes: i64,

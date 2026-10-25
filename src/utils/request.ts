@@ -101,6 +101,7 @@ const COMMAND_MAPPING: Record<string, { url: string; method: 'GET' | 'POST' | 'D
   'get_openclaw_config_content': { url: '/api/proxy/openclaw/config', method: 'POST' },
 
   // Stats
+  'get_token_stats_dashboard': { url: '/api/stats/token/dashboard', method: 'GET' },
   'get_token_stats_hourly': { url: '/api/stats/token/hourly', method: 'GET' },
   'get_token_stats_daily': { url: '/api/stats/token/daily', method: 'GET' },
   'get_token_stats_weekly': { url: '/api/stats/token/weekly', method: 'GET' },

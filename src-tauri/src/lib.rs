@@ -844,6 +844,7 @@ pub fn run() {
             commands::save_http_api_settings,
             // Token 统计命令
             commands::get_token_stats_minute,
+            commands::get_token_stats_dashboard,
             commands::get_token_stats_hourly,
             commands::get_token_stats_daily,
             commands::get_token_stats_weekly,

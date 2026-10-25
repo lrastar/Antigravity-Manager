@@ -1,9 +1,11 @@
 import React, { useMemo } from 'react';
 import { Cpu } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import type { TokenThroughputSummary } from './TokenThroughputBadge';
 
 export interface ModelShareItem {
     model: string;
+    throughput?: TokenThroughputSummary | null;
     total_tokens: number;
     request_count: number;
     native_generation_count?: number;

@@ -928,6 +928,7 @@ impl AxumServer {
             .route("/debug/logs", get(admin_get_debug_console_logs))
             .route("/debug/logs/clear", post(admin_clear_debug_console_logs))
             .route("/stats/token/clear", post(admin_clear_token_stats))
+            .route("/stats/token/dashboard", get(admin_get_token_stats_dashboard))
             .route("/stats/token/hourly", get(admin_get_token_stats_hourly))
             .route("/stats/token/daily", get(admin_get_token_stats_daily))
             .route("/stats/token/weekly", get(admin_get_token_stats_weekly))
@@ -2751,6 +2752,40 @@ async fn admin_clear_log_cache() -> Result<impl IntoResponse, (StatusCode, Json<
 }
 
 // Token Stats Handlers
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StatsDashboardQuery {
+    start_time: i64,
+    end_time: i64,
+    bucket: String,
+}
+
+async fn admin_get_token_stats_dashboard(
+    Query(query): Query<StatsDashboardQuery>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    if query.start_time < 0
+        || query.end_time <= query.start_time
+        || !matches!(query.bucket.as_str(), "hourly" | "daily")
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Invalid statistics date range or bucket".into(),
+            }),
+        ));
+    }
+    let dashboard =
+        crate::commands::get_token_stats_dashboard(query.start_time, query.end_time, query.bucket)
+            .await
+            .map_err(|error| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse { error }),
+                )
+            })?;
+    Ok(Json(dashboard))
+}
+
 #[derive(Deserialize, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 struct StatsPeriodQuery {

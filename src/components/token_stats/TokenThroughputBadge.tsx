@@ -12,21 +12,24 @@ export function formatTokenSpeed(value?: number | null): string {
         : '—';
 }
 
-export function TokenThroughputBadge({ throughput }: { throughput?: TokenThroughputSummary | null }) {
+export function ModelThroughputBadge({ models }: { models: { model: string; throughput?: TokenThroughputSummary | null }[] }) {
     const { t } = useTranslation();
     return (
-        <div
-            className="flex items-center gap-2 px-3 py-1.5 rounded-xl border border-emerald-200 dark:border-emerald-800/50 bg-emerald-50 dark:bg-emerald-950/20 text-xs"
-            title={t('token_stats.throughput_hint', '仅统计有可靠耗时的记录：输出 Token 总量 ÷ 生成耗时总和，包含首字等待；思考 Token 已包含在输出中，不重复计算。')}
-        >
-            <Gauge className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-            <span className="text-gray-600 dark:text-gray-300">{t('token_stats.throughput', '平均输出速度')}</span>
-            <strong className="font-mono text-emerald-700 dark:text-emerald-300">
-                {throughput?.tokens_per_second != null
-                    ? formatTokenSpeed(throughput.tokens_per_second)
-                    : t('token_stats.unavailable', '不可用')}
-            </strong>
-            <span className="text-gray-400">{t('token_stats.throughput_samples', '{{count}} 个有效样本', { count: throughput?.timed_generations || 0 })}</span>
-        </div>
+        <details className="relative text-xs">
+            <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 rounded-xl border border-emerald-200 dark:border-emerald-800/50 bg-emerald-50 dark:bg-emerald-950/20">
+                <Gauge className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+                <span>{t('token_stats.model_speed', '模型速度')}</span><span className="font-mono text-gray-500">{models.length}</span>
+            </summary>
+            <div className="fixed left-4 right-4 top-32 sm:absolute sm:left-auto sm:right-0 sm:top-full z-40 mt-2 sm:w-96 rounded-xl border border-gray-200 dark:border-base-300 bg-white dark:bg-base-100 p-3 shadow-lg">
+                <p className="mb-2 text-gray-500">{t('token_stats.model_speed_hint', '按所选时间范围统计；无可靠耗时的记录不计入速度。')}</p>
+                <div className="max-h-64 overflow-y-auto">
+                    {models.length === 0 && <p className="py-3 text-gray-500">{t('token_stats.no_data', '暂无数据')}</p>}
+                    {models.map(model => <div key={model.model} className="flex items-center justify-between gap-3 border-t border-gray-100 dark:border-base-200 py-2">
+                        <span className="min-w-0 break-all font-mono">{model.model}</span>
+                        <span className="shrink-0 text-right"><strong className="block font-mono text-emerald-600 dark:text-emerald-400">{formatTokenSpeed(model.throughput?.tokens_per_second)}</strong><span className="text-[10px] text-gray-500">{t('token_stats.throughput_samples', '{{count}} 个有效样本', {count:model.throughput?.timed_generations ?? 0})}</span></span>
+                    </div>)}
+                </div>
+            </div>
+        </details>
     );
 }

@@ -1,19 +1,17 @@
-import React, { useMemo, useState, useEffect } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
-    AlertTriangle,
     ArrowUpRight,
     Flame,
     Clock,
     Zap,
     Scale,
-    RefreshCw,
 } from 'lucide-react';
 import { HourlyUsagePoint } from './HourlyTrendBarCard';
 import { ModelShareItem } from './TopModelsShareCard';
-import { AccountTokenStats, TokenStatsSource } from '../../pages/TokenStats';
-import { request as invoke } from '../../utils/request';
-import { UserTokenStatsModal, UserTokenSummaryItem } from '../user_tokens/UserTokenStatsModal';
+import { TokenStatsSource } from '../../pages/TokenStats';
+import { getTokenUsageMetrics } from '../../utils/tokenStatsMetrics';
+import { formatTokenSpeed } from './TokenThroughputBadge';
 
 interface TokenStatsSummary {
     total_input_tokens: number;
@@ -33,29 +31,12 @@ interface CyberCockpitViewProps {
     hourlyData: HourlyUsagePoint[];
     timelineData?: any[];
     modelShareItems: ModelShareItem[];
-    accountData: AccountTokenStats[];
-    timeRange: 'minute' | 'hourly' | 'daily' | 'weekly' | 'all';
+    rangeLabel: string;
     totalEstimatedCost: number;
-    cacheMetrics: { hitRate: number; savings: number };
+    cacheMetrics: { hitRate: number; cachedTokens: number };
     formatNumber: (n: number) => string;
     formatCurrency: (n: number) => string;
     setShowPricingModal: (s: boolean) => void;
-}
-
-export interface UserTokenRankItem {
-    id: string;
-    token: string;
-    username: string;
-    description?: string | null;
-    enabled: boolean;
-    expires_type: string;
-    expires_at?: number | null;
-    max_ips: number;
-    total_tokens: number;
-    input_tokens: number;
-    output_tokens: number;
-    requests: number;
-    percentage: number;
 }
 
 const MODEL_NEON_COLORS = ['#10b981', '#3b82f6', '#a855f7', '#f59e0b', '#ec4899', '#06b6d4'];
@@ -65,8 +46,7 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
     source = 'all',
     hourlyData = [],
     modelShareItems = [],
-    accountData = [],
-    timeRange,
+    rangeLabel,
     totalEstimatedCost,
     cacheMetrics,
     formatNumber,
@@ -74,41 +54,8 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
     setShowPricingModal,
 }) => {
     const { t } = useTranslation();
-    const [rightTab, setRightTab] = useState<'accounts' | 'models' | 'users'>('accounts');
     const [selectedModelIdx, setSelectedModelIdx] = useState<number | null>(null);
     const [hoveredHourIdx, setHoveredHourIdx] = useState<number | null>(null);
-    const [userTokensRank, setUserTokensRank] = useState<UserTokenRankItem[]>([]);
-    const [userTokensLoading, setUserTokensLoading] = useState<boolean>(false);
-    const [selectedUserToken, setSelectedUserToken] = useState<UserTokenSummaryItem | null>(null);
-    const [showUserTokenModal, setShowUserTokenModal] = useState<boolean>(false);
-
-    // 获取用户 Token 消耗排行榜数据
-    useEffect(() => {
-        let isMounted = true;
-        const fetchUserRankings = async () => {
-            try {
-                setUserTokensLoading(true);
-                const res = await invoke<UserTokenRankItem[]>('get_user_tokens_ranking', {
-                    timeRange,
-                    time_range: timeRange,
-                });
-                if (isMounted && Array.isArray(res)) {
-                    setUserTokensRank(res);
-                }
-            } catch (e) {
-                console.error('Failed to fetch user tokens ranking:', e);
-            } finally {
-                if (isMounted) {
-                    setUserTokensLoading(false);
-                }
-            }
-        };
-        fetchUserRankings();
-        return () => {
-            isMounted = false;
-        };
-    }, [timeRange, summary]);
-
     // 1. 输入输出比例与生成比
     const inOutRatio = useMemo(() => {
         if (!summary || summary.total_tokens === 0) return { inPct: 50, outPct: 50, inOutMultiplier: '1.0' };
@@ -123,24 +70,18 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
 
     // 2. 均次负载与真实未缓存输入
     const deepMetrics = useMemo(() => {
-        const proxyReqs = summary?.total_requests || 0;
-        const nativeGens = summary?.total_native_generations || 0;
-        const totalCalls = source === 'antigravity'
-            ? (nativeGens || 1)
-            : source === 'all'
-            ? ((proxyReqs + nativeGens) || 1)
-            : (proxyReqs || 1);
+        const totalCalls = getTokenUsageMetrics(summary || {}, source).requestCount;
         const totalTokens = summary?.total_tokens || 0;
         const totalInput = summary?.total_input_tokens || 0;
         const totalOutput = summary?.total_output_tokens || 0;
         const totalCached = summary?.total_cached_tokens || 0;
         const totalReasoning = summary?.total_reasoning_tokens || 0;
 
-        const avgTokensPerReq = Math.round(totalTokens / totalCalls);
+        const avgTokensPerReq = totalCalls > 0 ? Math.round(totalTokens / totalCalls) : 0;
         const uncachedInput = Math.max(0, totalInput - totalCached);
-        const avgCostPerReq = proxyReqs > 0 ? totalEstimatedCost / proxyReqs : 0;
+        const avgCostPerReq = totalCalls > 0 ? totalEstimatedCost / totalCalls : 0;
         const reasoningPctOfOutput = totalOutput > 0 ? Math.round((totalReasoning / totalOutput) * 100) : 0;
-        const avgReasoningPerReq = Math.round(totalReasoning / totalCalls);
+        const avgReasoningPerReq = totalCalls > 0 ? Math.round(totalReasoning / totalCalls) : 0;
 
         return {
             avgTokensPerReq,
@@ -149,8 +90,7 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
             totalReasoning,
             reasoningPctOfOutput,
             avgReasoningPerReq,
-            proxyReqs,
-            nativeGens,
+            totalCalls,
         };
     }, [summary, totalEstimatedCost, source]);
 
@@ -286,36 +226,6 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
 
     const activeHour = hoveredHourIdx !== null ? hourBuckets[hoveredHourIdx] : null;
 
-    // 5. 账号风险监控池
-    const accountRiskPool = useMemo(() => {
-        const sorted = [...accountData].sort((a, b) => b.total_tokens - a.total_tokens);
-        const maxTokens = sorted[0]?.total_tokens || 1;
-        const totalTokens = summary?.total_tokens || 1;
-
-        return sorted.map((acc, idx) => {
-            const sharePct = Math.round((acc.total_tokens / totalTokens) * 100);
-            const relativePct = Math.min(100, Math.round((acc.total_tokens / maxTokens) * 100));
-            const isHighConcentration = sharePct >= 45 && sorted.length > 1;
-            const proxyTokens = acc.proxy_total_tokens !== undefined
-                ? acc.proxy_total_tokens
-                : (source === 'antigravity' ? 0 : acc.total_tokens);
-
-            return {
-                rank: idx + 1,
-                email: acc.account_email,
-                name: acc.account_email.split('@')[0],
-                tokens: acc.total_tokens,
-                requests: acc.request_count,
-                nativeGenerations: acc.native_generation_count || 0,
-                sharePct,
-                relativePct,
-                isHighConcentration,
-                isPrimary: idx === 0,
-                approxCost: (proxyTokens * 2.0) / 1000000,
-            };
-        });
-    }, [accountData, summary, source]);
-
     // 6. 完整模型消耗排行榜
     const allModelsRankList = useMemo(() => {
         const sorted = [...modelShareItems].sort((a, b) => b.total_tokens - a.total_tokens);
@@ -331,37 +241,14 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
                 name: m.model,
                 tokens: m.total_tokens,
                 requests: m.request_count,
-                nativeGenerations: m.native_generation_count || 0,
                 sharePct,
                 relativePct,
                 color: MODEL_NEON_COLORS[idx % MODEL_NEON_COLORS.length],
                 approxCost: m.cost,
+                throughput: m.throughput,
             };
         });
     }, [modelShareItems, summary]);
-
-    // 7. 用户 Token 消耗排行榜
-    const userTokensRankList = useMemo(() => {
-        const sorted = [...userTokensRank].sort((a, b) => b.total_tokens - a.total_tokens);
-        const maxTokens = sorted[0]?.total_tokens || 1;
-        const totalTokens = summary?.total_tokens || 1;
-
-        return sorted.map((u, idx) => {
-            const sharePct = totalTokens > 0
-                ? Math.round((u.total_tokens / totalTokens) * 100)
-                : 0;
-            const relativePct = maxTokens > 0
-                ? Math.min(100, Math.round((u.total_tokens / maxTokens) * 100))
-                : 0;
-
-            return {
-                ...u,
-                rank: idx + 1,
-                sharePct,
-                relativePct,
-            };
-        });
-    }, [userTokensRank, summary]);
 
     return (
         <div className="h-full w-full flex flex-col gap-3 font-sans select-none overflow-hidden text-gray-800 dark:text-gray-100">
@@ -380,15 +267,7 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
                                 <span>
                                     {t('token_stats.cockpit_period_label', '周期')}:{' '}
                                     <strong className="text-gray-900 dark:text-white">
-                                        {timeRange === 'minute'
-                                            ? t('token_stats.minute', '分钟')
-                                            : timeRange === 'hourly'
-                                            ? t('token_stats.hourly', '小时')
-                                            : timeRange === 'daily'
-                                            ? t('token_stats.daily', '日')
-                                            : timeRange === 'weekly'
-                                            ? t('token_stats.weekly', '周')
-                                            : t('token_stats.all_time', '全部历史')}
+                                        {rangeLabel}
                                     </strong>
                                 </span>
                                 {selectedModelIdx !== null && (
@@ -530,12 +409,12 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
                                 </div>
                             </div>
 
-                            {/* [右 3 列]: 反代估算费用 + 均次成本 + 缓存抵扣 + 状态 */}
+                            {/* [右 3 列]: 估算费用 + 均次成本 + 缓存命中 + 状态 */}
                             <div className="col-span-3 flex flex-col justify-between space-y-2 pl-3 border-l border-gray-100 dark:border-white/[0.06]">
                                 <div>
                                     <div className="flex items-center justify-between">
                                         <span className="text-[11px] font-mono uppercase text-gray-500 dark:text-gray-400">
-                                            {t('token_stats.proxy_estimated_cost', '反代估算费用')}
+                                            {t('token_stats.estimated_cost', '估算费用')}
                                         </span>
                                         <button
                                             onClick={() => setShowPricingModal(true)}
@@ -545,41 +424,28 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
                                         </button>
                                     </div>
                                     <div className="text-2xl font-black font-mono text-blue-600 dark:text-emerald-400 leading-none mt-1">
-                                        {source === 'antigravity'
-                                            ? t('token_stats.unavailable', '不可用')
-                                            : `$${totalEstimatedCost.toFixed(2)}`}
+                                        {`$${totalEstimatedCost.toFixed(2)}`}
                                     </div>
                                     <div className="text-[10px] text-gray-500 dark:text-gray-400 font-mono mt-0.5">
-                                        {source === 'antigravity'
-                                            ? t('token_stats.native_cost_unavailable_short', '原生用量不换算官方账单')
-                                            : `${t('token_stats.cockpit_avg_per_req', '反代均次')} ~$${deepMetrics.avgCostPerReq < 0.01 ? deepMetrics.avgCostPerReq.toFixed(4) : deepMetrics.avgCostPerReq.toFixed(3)} / req`}
+                                        {`${t('token_stats.estimated_cost_note', '按当前单价估算，不代表实际账单')} · ${t('token_stats.avg_per_call', '均次费用')} ~$${deepMetrics.avgCostPerReq < 0.01 ? deepMetrics.avgCostPerReq.toFixed(4) : deepMetrics.avgCostPerReq.toFixed(3)}`}
                                     </div>
                                 </div>
 
                                 <div>
                                     <div className="text-[11px] font-mono uppercase text-gray-500 dark:text-gray-400">
-                                        {t('token_stats.cockpit_cache_saved', '反代缓存节省')}
+                                        {t('token_stats.cached_tokens_title', '缓存命中')}
                                     </div>
                                     <div className="text-xl font-bold font-mono text-teal-600 dark:text-cyan-400 leading-none mt-0.5">
-                                        {source === 'antigravity'
-                                            ? t('token_stats.unavailable', '不可用')
-                                            : `+$${cacheMetrics.savings.toFixed(2)}`}
+                                        {`${cacheMetrics.hitRate.toFixed(1)}%`}
                                     </div>
                                     <div className="text-[10px] text-gray-500 dark:text-gray-400 font-mono">
-                                        {t('token_stats.cockpit_hit_rate_badge', {
-                                            rate: cacheMetrics.hitRate.toFixed(1),
-                                            defaultValue: `${cacheMetrics.hitRate.toFixed(1)}% 命中`,
-                                        })}
+                                        {t('token_stats.cached_tokens_count', '{{tokens}} Tokens 命中', { tokens: formatNumber(cacheMetrics.cachedTokens) })}
                                     </div>
                                 </div>
 
                                 <div className="pt-1 border-t border-gray-100 dark:border-white/[0.06] text-[10px] font-mono text-gray-500 dark:text-gray-400">
                                     <span>
-                                        {source === 'antigravity'
-                                            ? `${t('token_stats.model_generations', '模型生成次数')}: ${deepMetrics.nativeGens}`
-                                            : source === 'all'
-                                            ? `反代 ${deepMetrics.proxyReqs} / 原生 ${deepMetrics.nativeGens}`
-                                            : `${t('token_stats.requests', '请求数')}: ${deepMetrics.proxyReqs}`}
+                                        {t('token_stats.calls', '调用数')}: {formatNumber(deepMetrics.totalCalls)}
                                     </span>
                                 </div>
                             </div>
@@ -699,7 +565,7 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
                                         const y1 = cy + rInner * Math.sin(angle);
                                         const x2 = cx + rOuter * Math.cos(angle);
                                         const y2 = cy + rOuter * Math.sin(angle);
-                                        const isActive = (i / 40) * 100 <= Math.max(10, cacheMetrics.hitRate);
+                                        const isActive = cacheMetrics.hitRate > 0 && (i / 40) * 100 <= cacheMetrics.hitRate;
 
                                         return (
                                             <line
@@ -731,136 +597,19 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
 
                             <div className="shrink-0 pt-1.5 border-t border-gray-100 dark:border-white/[0.06] flex items-center justify-between text-[11px] font-mono text-gray-500 dark:text-gray-400">
                                 <span>{t('token_stats.cockpit_uncached_input', '未缓存输入')}: <strong className="text-gray-800 dark:text-white font-mono">{formatNumber(deepMetrics.uncachedInput)}</strong></span>
-                                <span className="text-teal-600 dark:text-emerald-400 font-bold font-mono">
-                                    {source === 'antigravity'
-                                        ? t('token_stats.unavailable', '不可用')
-                                        : `+$${cacheMetrics.savings.toFixed(2)} ${t('token_stats.cockpit_saved_badge', '节省')}`}
-                                </span>
+                                <span className="text-teal-600 dark:text-emerald-400 font-bold font-mono">{formatNumber(cacheMetrics.cachedTokens)} Tokens</span>
                             </div>
                         </div>
                     </div>
                 </div>
 
-                {/* ---------------- 右侧 30%：多视图自由切换（账号排查 / 模型排行 / 用户排行） ---------------- */}
+                {/* 模型消耗排行 */}
                 <div className="col-span-3 flex flex-col gap-2.5 min-h-0 bg-white/95 dark:bg-[#0c121e] border border-gray-200/90 dark:border-[#1e2a3f] rounded-2xl p-4 shadow-sm dark:shadow-lg transition-colors">
-                    {/* Top: 多视图 Tab 切换器 (强制三等分单行、不折行) */}
-                    <div className="shrink-0 flex items-center justify-between pb-1.5 border-b border-gray-100 dark:border-white/[0.06]">
-                        <div className="grid grid-cols-3 gap-1 bg-gray-100 dark:bg-[#121929] border border-gray-200 dark:border-[#1f2b42] rounded-lg p-0.5 w-full">
-                            <button
-                                onClick={() => setRightTab('accounts')}
-                                className={`py-1.5 px-2 text-center rounded-md text-xs font-mono font-medium transition-all min-w-0 truncate ${
-                                    rightTab === 'accounts'
-                                        ? 'bg-white dark:bg-[#1e2a40] text-blue-600 dark:text-emerald-400 font-bold shadow-sm'
-                                        : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
-                                }`}
-                                title={`${t('token_stats.cockpit_account_audit', '账号排查')} (${accountData.length})`}
-                            >
-                                {t('token_stats.cockpit_tab_accounts', '账号')}
-                            </button>
-                            <button
-                                onClick={() => setRightTab('models')}
-                                className={`py-1.5 px-2 text-center rounded-md text-xs font-mono font-medium transition-all min-w-0 truncate ${
-                                    rightTab === 'models'
-                                        ? 'bg-white dark:bg-[#1e2a40] text-blue-600 dark:text-blue-400 font-bold shadow-sm'
-                                        : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
-                                }`}
-                                title={`${t('token_stats.cockpit_model_rank', '模型排行')} (${modelShareItems.length})`}
-                            >
-                                {t('token_stats.cockpit_tab_models', '模型')}
-                            </button>
-                            <button
-                                onClick={() => setRightTab('users')}
-                                className={`py-1.5 px-2 text-center rounded-md text-xs font-mono font-medium transition-all min-w-0 truncate ${
-                                    rightTab === 'users'
-                                        ? 'bg-white dark:bg-[#1e2a40] text-purple-600 dark:text-purple-400 font-bold shadow-sm'
-                                        : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
-                                }`}
-                                title={`${t('token_stats.cockpit_user_rank', '用户排行')} (${userTokensRank.length})`}
-                            >
-                                {t('token_stats.cockpit_tab_users', '用户')}
-                            </button>
-                        </div>
-                    </div>
-
-                    {/* Middle: 完整的消耗列表 (三视图完全国际化 + 完整名 title tooltip) */}
+                    <h2 className="shrink-0 pb-2 border-b border-gray-100 dark:border-white/[0.06] text-xs font-mono font-bold">
+                        {t('token_stats.cockpit_model_rank', '模型排行')} ({modelShareItems.length})
+                    </h2>
                     <div className="flex-1 min-h-0 overflow-y-auto space-y-2 pr-1 scrollbar-thin scrollbar-thumb-gray-200 dark:scrollbar-thumb-[#1e293b]">
-                        {rightTab === 'accounts' ? (
-                            accountRiskPool.length === 0 ? (
-                                <div className="text-center text-xs text-gray-400 py-12 font-mono">
-                                    {t('token_stats.no_account_activity', '暂无账号调用')}
-                                </div>
-                            ) : (
-                                accountRiskPool.map((acc) => (
-                                    <div
-                                        key={acc.email}
-                                        className={`p-2.5 rounded-xl border transition-all ${
-                                            acc.isHighConcentration
-                                                ? 'bg-amber-50 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/30'
-                                                : 'bg-gray-50/80 dark:bg-[#111929] border-gray-200/70 dark:border-[#1b263b] hover:border-gray-300 dark:hover:border-[#2a3a59]'
-                                        }`}
-                                    >
-                                        <div className="flex items-center justify-between text-xs font-mono mb-1 gap-2">
-                                            <div className="flex items-center gap-1.5 min-w-0 flex-1">
-                                                <span
-                                                    className={`w-4 h-4 rounded text-[10px] flex items-center justify-center font-bold shrink-0 ${
-                                                        acc.rank === 1
-                                                            ? 'bg-amber-400 text-black'
-                                                            : acc.rank === 2
-                                                            ? 'bg-gray-300 text-black'
-                                                            : acc.rank === 3
-                                                            ? 'bg-amber-700 text-white'
-                                                            : 'bg-gray-200 dark:bg-[#1f293d] text-gray-600 dark:text-gray-400'
-                                                    }`}
-                                                >
-                                                    {acc.rank}
-                                                </span>
-                                                <span className="text-gray-800 dark:text-gray-200 font-semibold truncate" title={acc.email}>
-                                                    {acc.name}
-                                                </span>
-                                                {acc.isPrimary && (
-                                                    <span className="text-[9px] px-1 py-0.2 rounded bg-amber-100 dark:bg-amber-400/20 text-amber-700 dark:text-amber-300 font-mono shrink-0">
-                                                        {t('token_stats.cockpit_primary_badge', '主力')}
-                                                    </span>
-                                                )}
-                                            </div>
-                                            <span className="text-blue-600 dark:text-emerald-400 font-bold font-mono shrink-0">
-                                                {formatNumber(acc.tokens)}
-                                            </span>
-                                        </div>
-
-                                        <div className="w-full h-1.5 bg-gray-200 dark:bg-[#172236] rounded-full overflow-hidden mb-1.5">
-                                            <div
-                                                className={`h-full ${
-                                                    acc.isHighConcentration
-                                                        ? 'bg-amber-500 dark:bg-amber-400'
-                                                        : 'bg-gradient-to-r from-blue-500 dark:from-emerald-500 to-cyan-500 dark:to-teal-400'
-                                                }`}
-                                                style={{ width: `${acc.relativePct}%` }}
-                                            />
-                                        </div>
-
-                                        <div className="flex items-center justify-between text-[10px] font-mono text-gray-500 dark:text-gray-400">
-                                            <span>
-                                                {t('token_stats.percentage', '占比')}: {acc.sharePct}% (
-                                                {source === 'antigravity'
-                                                    ? `${acc.nativeGenerations} ${t('token_stats.times_gen', '次生成')}`
-                                                    : source === 'all'
-                                                    ? `${acc.requests}/${acc.nativeGenerations} ${t('token_stats.times', '次')}`
-                                                    : `${acc.requests} ${t('token_stats.times', '次')}`}
-                                                )
-                                            </span>
-                                            {acc.isHighConcentration ? (
-                                                <span className="text-amber-600 dark:text-amber-400 font-bold flex items-center gap-0.5">
-                                                    <AlertTriangle className="w-3 h-3" /> {t('token_stats.cockpit_high_concentration', '流量高度集中')}
-                                                </span>
-                                            ) : (
-                                                <span>{source === 'antigravity' ? t('token_stats.unavailable', '不可用') : `~$${acc.approxCost.toFixed(2)}`}</span>
-                                            )}
-                                        </div>
-                                    </div>
-                                ))
-                            )
-                        ) : rightTab === 'models' ? (
+                        {
                             allModelsRankList.length === 0 ? (
                                 <div className="text-center text-xs text-gray-400 py-12 font-mono">
                                     {t('token_stats.no_model_activity', '暂无模型活动')}
@@ -905,116 +654,23 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
                                         <div className="flex items-center justify-between text-[10px] font-mono text-gray-500 dark:text-gray-400">
                                             <span>
                                                 {t('token_stats.percentage', '占比')}: {m.sharePct}% (
-                                                {source === 'antigravity'
-                                                    ? `${m.nativeGenerations} ${t('token_stats.times_gen', '次生成')}`
-                                                    : source === 'all'
-                                                    ? `${m.requests}/${m.nativeGenerations} ${t('token_stats.times', '次')}`
-                                                    : `${m.requests} ${t('token_stats.times', '次')}`}
+                                                {m.requests} {t('token_stats.times', '次')}
                                                 )
                                             </span>
-                                            <span>{source === 'antigravity' ? t('token_stats.unavailable', '不可用') : `~$${m.approxCost.toFixed(2)}`}</span>
+                                            <span>{`~$${m.approxCost.toFixed(2)}`}</span>
+                                        </div>
+                                        <div className="mt-1 text-[10px] font-mono text-gray-500 dark:text-gray-400" title={t('token_stats.model_speed_hint', '按模型汇总有效输出 Token ÷ 生成耗时；无计时样本显示 —')}>
+                                            {t('token_stats.model_speed', '模型速度')}: <strong className="text-emerald-600 dark:text-emerald-400">{formatTokenSpeed(m.throughput?.tokens_per_second)}</strong>
                                         </div>
                                     </div>
                                 ))
                             )
-                        ) : (
-                            userTokensLoading ? (
-                                <div className="flex items-center justify-center py-12 text-xs text-gray-400 font-mono">
-                                    <RefreshCw className="w-4 h-4 animate-spin mr-1.5" />
-                                    {t('common.loading', '加载中...')}
-                                </div>
-                            ) : userTokensRankList.length === 0 ? (
-                                <div className="text-center text-xs text-gray-400 py-12 font-mono">
-                                    {t('token_stats.cockpit_no_user_activity', '暂无用户 Key 消耗活动')}
-                                </div>
-                            ) : (
-                                userTokensRankList.map((u) => (
-                                    <div
-                                        key={u.id}
-                                        onClick={() => {
-                                            setSelectedUserToken({
-                                                id: u.id,
-                                                token: u.token,
-                                                username: u.username,
-                                                description: u.description || undefined,
-                                                enabled: u.enabled,
-                                                expires_type: u.expires_type,
-                                                expires_at: u.expires_at || undefined,
-                                                max_ips: u.max_ips,
-                                                total_requests: u.requests,
-                                                total_tokens_used: u.total_tokens,
-                                            });
-                                            setShowUserTokenModal(true);
-                                        }}
-                                        className="group p-2.5 rounded-xl border bg-gray-50/80 dark:bg-[#111929] border-gray-200/70 dark:border-[#1b263b] hover:border-purple-400 dark:hover:border-purple-500/50 hover:bg-white dark:hover:bg-[#152033] cursor-pointer transition-all shadow-none hover:shadow-sm"
-                                    >
-                                        <div className="flex items-center justify-between text-xs font-mono mb-1 gap-2">
-                                            <div className="flex items-center gap-1.5 min-w-0 flex-1">
-                                                <span
-                                                    className={`w-4 h-4 rounded text-[10px] flex items-center justify-center font-bold shrink-0 ${
-                                                        u.rank === 1
-                                                            ? 'bg-amber-400 text-black'
-                                                            : u.rank === 2
-                                                            ? 'bg-gray-300 text-black dark:bg-gray-400'
-                                                            : u.rank === 3
-                                                            ? 'bg-amber-700 text-white'
-                                                            : 'bg-gray-200 dark:bg-[#1f293d] text-gray-600 dark:text-gray-400'
-                                                    }`}
-                                                >
-                                                    {u.rank}
-                                                </span>
-                                                <span className="text-gray-800 dark:text-gray-200 font-semibold truncate" title={u.username}>
-                                                    {u.username}
-                                                </span>
-                                                <span className="text-[10px] font-mono text-gray-400 dark:text-gray-500 shrink-0 hidden sm:inline" title={u.token}>
-                                                    {u.token ? `${u.token.slice(0, 4)}...${u.token.slice(-4)}` : ''}
-                                                </span>
-                                                {!u.enabled && (
-                                                    <span className="text-[9px] px-1 py-0.2 rounded bg-red-100 dark:bg-red-400/20 text-red-600 dark:text-red-400 font-mono shrink-0">
-                                                        {t('user_token.disabled', '已禁用')}
-                                                    </span>
-                                                )}
-                                            </div>
-                                            <span className="text-purple-600 dark:text-purple-400 font-bold font-mono shrink-0">
-                                                {formatNumber(u.total_tokens)}
-                                            </span>
-                                        </div>
-
-                                        <div className="w-full h-1.5 bg-gray-200 dark:bg-[#172236] rounded-full overflow-hidden mb-1.5">
-                                            <div
-                                                className="h-full bg-gradient-to-r from-purple-500 to-indigo-500"
-                                                style={{ width: `${u.relativePct}%` }}
-                                            />
-                                        </div>
-
-                                        <div className="flex items-center justify-between text-[10px] font-mono text-gray-500 dark:text-gray-400">
-                                            <span>
-                                                {t('token_stats.percentage', '占比')}: {u.sharePct}% ({u.requests} {t('token_stats.times', '次')})
-                                            </span>
-                                            <span className="text-purple-600 dark:text-purple-400 group-hover:underline flex items-center gap-0.5">
-                                                {t('token_stats.cockpit_view_detail', '详情')} <ArrowUpRight className="w-3 h-3" />
-                                            </span>
-                                        </div>
-                                    </div>
-                                ))
-                            )
-                        )}
+                        }
                     </div>
 
-                    {/* 底部防御状态 */}
-                    <div className="shrink-0 pt-2 border-t border-gray-100 dark:border-white/[0.06] flex items-center justify-between text-[11px] font-mono text-gray-500 dark:text-gray-400">
-                        <span>{t('token_stats.cockpit_waf_active', '网关防刷隔离')}</span>
-                        <span className="text-blue-600 dark:text-emerald-400 font-bold">● {t('token_stats.cockpit_active_badge', '已激活')}</span>
-                    </div>
                 </div>
             </div>
 
-            {/* 用户 Token 专属用量弹窗 */}
-            <UserTokenStatsModal
-                isOpen={showUserTokenModal}
-                onClose={() => setShowUserTokenModal(false)}
-                token={selectedUserToken}
-            />
         </div>
     );
 };

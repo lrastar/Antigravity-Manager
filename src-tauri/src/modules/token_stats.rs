@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Aggregated token statistics
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TokenStatsAggregated {
     pub period: String, // e.g., "2024-01-15 14:00" for hourly, "2024-01-15" for daily
     pub total_input_tokens: u64,
@@ -71,6 +71,8 @@ pub struct TokenStatsSummary {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelTokenStats {
     pub model: String,
+    #[serde(default)]
+    pub throughput: Option<crate::modules::token_throughput::TokenThroughputSummary>,
     pub total_input_tokens: u64,
     pub total_output_tokens: u64,
     pub total_cached_tokens: u64,
@@ -94,6 +96,15 @@ pub struct ModelTokenStats {
 pub struct ModelTrendPoint {
     pub period: String,
     pub model_data: std::collections::HashMap<String, u64>,
+}
+
+/// One read snapshot for the dashboard's selected [start, end) interval.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TokenStatsDashboard {
+    pub summary: TokenStatsSummary,
+    pub models: Vec<ModelTokenStats>,
+    pub timeline: Vec<TokenStatsAggregated>,
+    pub model_trend: Vec<ModelTrendPoint>,
 }
 
 /// Account trend data point (for stacked area chart)
@@ -643,6 +654,15 @@ pub fn get_summary_stats_with_conn(
     cutoff: i64,
     source: Option<&str>,
 ) -> Result<TokenStatsSummary, String> {
+    get_summary_stats_in_range(conn, cutoff, i64::MAX, source)
+}
+
+fn get_summary_stats_in_range(
+    conn: &Connection,
+    cutoff: i64,
+    end: i64,
+    source: Option<&str>,
+) -> Result<TokenStatsSummary, String> {
     let subquery = make_usage_subquery(source)?;
     let sql = format!(
         "SELECT COALESCE(SUM(input_tokens), 0),
@@ -659,7 +679,7 @@ pub fn get_summary_stats_with_conn(
             COALESCE(SUM(proxy_cached_tokens), 0),
             COALESCE(SUM(proxy_total_tokens), 0)
          FROM {}
-         WHERE timestamp >= ?1",
+         WHERE timestamp >= ?1 AND timestamp < ?2",
         subquery
     );
 
@@ -677,8 +697,22 @@ pub fn get_summary_stats_with_conn(
         proxy_output,
         proxy_cached,
         proxy_total,
-    ): (u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64) = conn
-        .query_row(&sql, [cutoff], |row| {
+    ): (
+        u64,
+        u64,
+        u64,
+        u64,
+        u64,
+        u64,
+        u64,
+        u64,
+        u64,
+        u64,
+        u64,
+        u64,
+        u64,
+    ) = conn
+        .query_row(&sql, [cutoff, end], |row| {
             Ok((
                 row.get(0)?,
                 row.get(1)?,
@@ -698,7 +732,9 @@ pub fn get_summary_stats_with_conn(
         .map_err(|e| e.to_string())?;
 
     Ok(TokenStatsSummary {
-        throughput: Some(crate::modules::token_throughput::summarize(conn, cutoff, source)?),
+        throughput: Some(crate::modules::token_throughput::summarize_range(
+            conn, cutoff, end, source,
+        )?),
         total_input_tokens: total_input,
         total_output_tokens: total_output,
         total_cached_tokens: total_cached,
@@ -733,7 +769,17 @@ pub fn get_model_stats_with_conn(
     cutoff: i64,
     source: Option<&str>,
 ) -> Result<Vec<ModelTokenStats>, String> {
+    get_model_stats_in_range(conn, cutoff, i64::MAX, source)
+}
+
+fn get_model_stats_in_range(
+    conn: &Connection,
+    cutoff: i64,
+    end: i64,
+    source: Option<&str>,
+) -> Result<Vec<ModelTokenStats>, String> {
     let subquery = make_usage_subquery(source)?;
+    let rates = crate::modules::token_throughput::summarize_models(conn, cutoff, end, source)?;
     let sql = format!(
         "SELECT model,
             COALESCE(SUM(input_tokens), 0) as input,
@@ -748,7 +794,7 @@ pub fn get_model_stats_with_conn(
             COALESCE(SUM(proxy_cached_tokens), 0) as proxy_cached,
             COALESCE(SUM(proxy_total_tokens), 0) as proxy_total
          FROM {}
-         WHERE timestamp >= ?1
+         WHERE timestamp >= ?1 AND timestamp < ?2
          GROUP BY model
          ORDER BY total DESC",
         subquery
@@ -757,9 +803,11 @@ pub fn get_model_stats_with_conn(
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
 
     let rows = stmt
-        .query_map([cutoff], |row| {
+        .query_map([cutoff, end], |row| {
+            let model: String = row.get(0)?;
             Ok(ModelTokenStats {
-                model: row.get(0)?,
+                throughput: rates.get(&model).cloned(),
+                model,
                 total_input_tokens: row.get(1)?,
                 total_output_tokens: row.get(2)?,
                 total_cached_tokens: row.get(3)?,
@@ -780,6 +828,99 @@ pub fn get_model_stats_with_conn(
         result.push(row.map_err(|e| e.to_string())?);
     }
     Ok(result)
+}
+
+pub fn get_dashboard_stats(
+    start: i64,
+    end: i64,
+    bucket: &str,
+) -> Result<TokenStatsDashboard, String> {
+    let conn = connect_db()?;
+    get_dashboard_stats_with_conn(&conn, start, end, bucket)
+}
+
+pub fn get_dashboard_stats_with_conn(
+    conn: &Connection,
+    start: i64,
+    end: i64,
+    bucket: &str,
+) -> Result<TokenStatsDashboard, String> {
+    if start < 0 || end <= start {
+        return Err("Invalid statistics date range".into());
+    }
+    let format = match bucket {
+        "hourly" => "%Y-%m-%d %H:00",
+        "daily" => "%Y-%m-%d",
+        _ => return Err("Invalid statistics bucket".into()),
+    };
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    let summary = get_summary_stats_in_range(&tx, start, end, Some("all"))?;
+    let models = get_model_stats_in_range(&tx, start, end, Some("all"))?;
+    let (timeline, model_trend) = {
+        let sql = format!(
+            "SELECT strftime('{format}', timestamp, 'unixepoch', 'localtime'), model,
+                SUM(input_tokens), SUM(output_tokens), SUM(cached_tokens), SUM(reasoning_tokens),
+                SUM(total_tokens), SUM(req_count), SUM(gen_count)
+             FROM {} WHERE timestamp >= ?1 AND timestamp < ?2 GROUP BY 1, model ORDER BY 1",
+            make_usage_subquery(Some("all"))?
+        );
+        let mut stmt = tx.prepare(&sql).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([start, end], |row| {
+                Ok((
+                    row.get::<_, String>(1)?,
+                    TokenStatsAggregated {
+                        period: row.get(0)?,
+                        total_input_tokens: row.get(2)?,
+                        total_output_tokens: row.get(3)?,
+                        total_cached_tokens: row.get(4)?,
+                        total_reasoning_tokens: row.get(5)?,
+                        total_tokens: row.get(6)?,
+                        request_count: row.get(7)?,
+                        native_generation_count: row.get(8)?,
+                    },
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        let mut timeline = std::collections::BTreeMap::<String, TokenStatsAggregated>::new();
+        let mut trends =
+            std::collections::BTreeMap::<String, std::collections::HashMap<String, u64>>::new();
+        for row in rows {
+            let (model, point) = row.map_err(|e| e.to_string())?;
+            trends
+                .entry(point.period.clone())
+                .or_default()
+                .insert(model, point.total_tokens);
+            let total =
+                timeline
+                    .entry(point.period.clone())
+                    .or_insert_with(|| TokenStatsAggregated {
+                        period: point.period.clone(),
+                        ..Default::default()
+                    });
+            total.total_input_tokens += point.total_input_tokens;
+            total.total_output_tokens += point.total_output_tokens;
+            total.total_cached_tokens += point.total_cached_tokens;
+            total.total_reasoning_tokens += point.total_reasoning_tokens;
+            total.total_tokens += point.total_tokens;
+            total.request_count += point.request_count;
+            total.native_generation_count += point.native_generation_count;
+        }
+        (
+            timeline.into_values().collect(),
+            trends
+                .into_iter()
+                .map(|(period, model_data)| ModelTrendPoint { period, model_data })
+                .collect(),
+        )
+    };
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(TokenStatsDashboard {
+        summary,
+        models,
+        timeline,
+        model_trend,
+    })
 }
 
 pub fn get_model_trend_minute(
@@ -1133,6 +1274,114 @@ pub(crate) fn clear_stats_with_conn_and_dir(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dashboard_uses_one_bounded_all_source_range_for_every_aggregate() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE token_usage (timestamp INTEGER, account_email TEXT, model TEXT,
+                    input_tokens INTEGER, output_tokens INTEGER, cached_tokens INTEGER,
+                    total_tokens INTEGER, reasoning_tokens INTEGER, duration_ms REAL);
+                 CREATE TABLE native_token_usage (timestamp INTEGER, account_email TEXT, model TEXT,
+                    input_tokens INTEGER, cached_tokens INTEGER, cache_write_tokens INTEGER,
+                    output_tokens INTEGER, total_tokens INTEGER, reasoning_tokens INTEGER,
+                    attribution_type TEXT, duration_ms REAL);
+                 INSERT INTO token_usage VALUES
+                    (100, 'account-a', 'alpha', 1000, 100, 200, 1100, 20, 1000),
+                    (199, 'account-a', 'beta', 10, 50, 0, 60, 0, 1000),
+                    (99, 'outside', 'outside', 90000, 90000, 0, 180000, 0, 1);
+                 INSERT INTO native_token_usage VALUES
+                    (150, 'account-b', 'alpha', 400, 100, 50, 900, 1450, 40, 'auto', 3000),
+                    (160, '', 'untimed', 20, 30, 0, 0, 50, 0, 'unassigned', NULL),
+                    (200, 'outside', 'outside', 90000, 0, 0, 90000, 180000, 0, 'auto', 1);",
+        )
+        .unwrap();
+
+        for bucket in ["hourly", "daily"] {
+            let dashboard = get_dashboard_stats_with_conn(&conn, 100, 200, bucket).unwrap();
+            let summary = &dashboard.summary;
+            assert_eq!(summary.total_tokens, 2660);
+            assert_eq!(summary.total_input_tokens, 1610);
+            assert_eq!(summary.total_output_tokens, 1050);
+            assert_eq!(summary.total_cached_tokens, 330);
+            assert_eq!(summary.total_reasoning_tokens, 60);
+            assert_eq!(summary.total_requests, 2);
+            assert_eq!(summary.total_native_generations, 2);
+            assert_eq!(
+                summary.unique_accounts, 2,
+                "account aggregation remains available"
+            );
+            assert_eq!(summary.unassigned_tokens, 50);
+            assert_eq!(
+                dashboard.models.iter().map(|m| m.total_tokens).sum::<u64>(),
+                summary.total_tokens
+            );
+            assert_eq!(
+                dashboard
+                    .timeline
+                    .iter()
+                    .map(|p| p.total_tokens)
+                    .sum::<u64>(),
+                summary.total_tokens
+            );
+            assert_eq!(
+                dashboard
+                    .timeline
+                    .iter()
+                    .map(|p| p.request_count + p.native_generation_count)
+                    .sum::<u64>(),
+                4
+            );
+            assert_eq!(
+                dashboard
+                    .model_trend
+                    .iter()
+                    .flat_map(|p| p.model_data.values())
+                    .sum::<u64>(),
+                summary.total_tokens
+            );
+            assert!(dashboard.models.iter().all(|m| m.model != "outside"));
+            let alpha = dashboard
+                .models
+                .iter()
+                .find(|m| m.model == "alpha")
+                .unwrap();
+            assert_eq!(alpha.total_tokens, 2550);
+            assert_eq!(
+                alpha.throughput.as_ref().unwrap().tokens_per_second,
+                Some(250.0)
+            );
+            assert_eq!(alpha.throughput.as_ref().unwrap().timed_generations, 2);
+            let beta = dashboard.models.iter().find(|m| m.model == "beta").unwrap();
+            assert_eq!(
+                beta.throughput.as_ref().unwrap().tokens_per_second,
+                Some(50.0)
+            );
+            let untimed = dashboard
+                .models
+                .iter()
+                .find(|m| m.model == "untimed")
+                .unwrap();
+            assert!(untimed.throughput.is_none());
+        }
+        let empty = get_dashboard_stats_with_conn(&conn, 201, 300, "daily").unwrap();
+        assert_eq!(empty.summary.total_tokens, 0);
+        assert!(empty.models.is_empty() && empty.timeline.is_empty() && empty.model_trend.is_empty());
+    }
+
+    #[test]
+    fn dashboard_rejects_invalid_ranges_and_buckets_before_querying() {
+        let conn = Connection::open_in_memory().unwrap();
+        for (start, end, bucket) in [
+            (-1, 10, "daily"),
+            (10, 10, "daily"),
+            (11, 10, "daily"),
+            (0, 10, "invalid"),
+        ] {
+            let error = get_dashboard_stats_with_conn(&conn, start, end, bucket).unwrap_err();
+            assert!(error.starts_with("Invalid statistics"));
+        }
+    }
 
     #[test]
     fn usage_subquery_defaults_to_proxy_and_only_all_unions_sources() {
