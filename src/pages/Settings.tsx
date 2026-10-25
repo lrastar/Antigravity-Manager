@@ -1,6 +1,7 @@
 import { useState, useEffect, startTransition } from 'react';
 import { Save, Github, User, MessageCircle, ExternalLink, RefreshCw, Heart, Coffee, LayoutDashboard, Users, Network, Activity, BarChart3, Settings as SettingsIcon, Lock, CheckCircle2, Globe, Send, KeyRound, Copy, Check } from 'lucide-react';
 import { request as invoke } from '../utils/request';
+import { isForkPageEnabled } from '../config/forkFeatures';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useConfigStore } from '../stores/useConfigStore';
 import { AppConfig, HubFingerprint } from '../types/config';
@@ -818,7 +819,7 @@ function Settings() {
                                             { path: '/user-token', label: t('nav.user_token', 'User Tokens'), icon: Users },
                                             { path: '/security', label: t('nav.security'), icon: Lock },
                                             { path: '/settings', label: t('nav.settings'), icon: SettingsIcon },
-                                        ].map((item) => {
+                                        ].filter(item => isForkPageEnabled(item.path)).map((item) => {
                                             const hiddenItems = formData.hidden_menu_items || [];
                                             const isVisible = !hiddenItems.includes(item.path);
                                             const isSettings = item.path === '/settings';

@@ -25,6 +25,7 @@ import { request as invoke } from './utils/request';
 import { AdminAuthGuard } from './components/common/AdminAuthGuard';
 import MiniView from './components/layout/MiniView';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { isForkPageEnabled } from './config/forkFeatures';
 
 const router = createBrowserRouter([
   {
@@ -76,7 +77,7 @@ const router = createBrowserRouter([
         path: '*',
         element: <Navigate to="/" replace />,
       },
-    ],
+    ].filter(route => isForkPageEnabled(route.path)),
   },
 ]);
 

@@ -6,6 +6,7 @@ import { NavLogo } from './NavLogo';
 import { NavMenu } from './NavMenu';
 import { NavSettings } from './NavSettings';
 import type { NavItem } from './constants';
+import { isForkPageEnabled } from '../../config/forkFeatures';
 
 /**
  * Navbar 主组件
@@ -105,7 +106,7 @@ function Navbar() {
 
                     {/* 导航菜单 - 自己处理响应式 */}
                     <div className="flex-1 flex justify-center">
-                        <NavMenu navItems={navItems} />
+                        <NavMenu navItems={navItems.filter(item => isForkPageEnabled(item.path))} />
                     </div>
 
                     {/* 设置按钮 - 自己处理响应式 */}
