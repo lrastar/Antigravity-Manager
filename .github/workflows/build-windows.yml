@@ -5,13 +5,14 @@ on:
     branches:
       - beta
       - main
+      - codex/native-token-throughput-ui
   workflow_dispatch:
     inputs:
       create_release:
         description: 'Publish as a GitHub Release on this repository'
         required: false
         type: boolean
-        default: true
+        default: false
       release_tag:
         description: 'Release Tag (leave empty to auto-detect from package.json)'
         required: false
