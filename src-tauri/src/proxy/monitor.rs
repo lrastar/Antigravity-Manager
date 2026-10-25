@@ -467,9 +467,10 @@ impl ProxyMonitor {
             let account = account.clone();
             let cached = log.cached_tokens.unwrap_or(0);
             let reasoning = log.reasoning_tokens.unwrap_or(0);
+            let duration = log.duration;
             tokio::task::spawn_blocking(move || {
-                if let Err(e) = crate::modules::token_stats::record_usage(
-                    &account, &model, input, output, cached, reasoning,
+                if let Err(e) = crate::modules::token_stats::record_usage_with_duration(
+                    &account, &model, input, output, cached, reasoning, Some(duration),
                 ) {
                     tracing::debug!("Failed to record token stats: {}", e);
                 }

@@ -229,6 +229,8 @@ impl SystemIntegration for DesktopIntegration {
         ));
 
         if target_ide == Some("agy") {
+            // agy CLI 与原生经典版共享系统凭据存储，修改前立即关闭当前原生观测区间
+            let _ = crate::modules::native_token::close_active_observation_window();
             write_to_system_keyring(account)?;
             let _ = write_to_file_credentials(account, true);
             // A successful write (or a file fallback) is not proof that the CLI
@@ -283,6 +285,8 @@ impl SystemIntegration for DesktopIntegration {
             crate::modules::logger::log_info(
                 "[Desktop] Determined target environment is Antigravity classic, using classic account switch logic.",
             );
+            // 原生 Token 统计：切换开始即结束旧账号观测区间
+            let _ = crate::modules::native_token::close_active_observation_window();
         }
 
         // 0. 在关闭外部进程前，预先快照捕获正在运行的客户端可执行文件路径与启动参数
@@ -389,6 +393,9 @@ impl SystemIntegration for DesktopIntegration {
                     "[Desktop] Hot switch completed for {}: language_server respawned with the new credentials.",
                     account.email
                 ));
+                if !is_ide {
+                    let _ = crate::modules::native_token::open_observation_window(&account.email, "switch_observation");
+                }
                 let _ = crate::modules::tray::update_tray_menus(&self.app_handle);
                 return Ok(());
             }
@@ -407,6 +414,7 @@ impl SystemIntegration for DesktopIntegration {
             );
         }
 
+        let mut client_started = true;
         if let Err(e) = process::start_antigravity_with_fallback_path(
             effective_target,
             active_exe_path.as_deref(),
@@ -416,12 +424,18 @@ impl SystemIntegration for DesktopIntegration {
             // （例如纯反代服务模式、未安装 GUI 客户端或无头环境）：
             // 此时凭据和配置已经写入成功，降级处理并记录信息，避免让整个切号操作报错中断。
             if !running && process::is_client_executable_missing(&e) {
+                client_started = false;
                 crate::modules::logger::log_info(
                     "[Desktop] Client executable not found and was not running before switch; credentials applied successfully.",
                 );
             } else {
                 return Err(e);
             }
+        }
+
+        // 原生 Token 统计：仅在目标原生客户端进程完成重建且凭据核验通过后，建立新账号观测区间
+        if !is_ide && client_started {
+            let _ = crate::modules::native_token::open_observation_window(&account.email, "switch_observation");
         }
 
         // 4. 更新托盘
@@ -1213,6 +1227,8 @@ impl SystemIntegration for CliIntegration {
         target_ide: Option<&str>,
     ) -> Result<(), String> {
         if target_ide == Some("agy") {
+            // agy CLI 与原生经典版共享系统凭据存储，修改前立即关闭当前原生观测区间
+            let _ = crate::modules::native_token::close_active_observation_window();
             write_to_system_keyring(account)?;
             let _ = write_to_file_credentials(account, true);
             let stored = read_from_system_keyring_only()?;
@@ -1240,6 +1256,7 @@ impl SystemIntegration for CliIntegration {
             ide_exe_str.as_deref(),
         );
 
+        let _ = crate::modules::native_token::close_active_observation_window();
         let _ = write_to_system_keyring(account);
         if let Ok(db_path) = db::get_db_path(effective_target) {
             if db_path.exists() {

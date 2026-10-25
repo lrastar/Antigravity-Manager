@@ -344,6 +344,8 @@ pub fn run() {
 
         let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
         rt.block_on(async {
+            // Keep native token collection available in CLI/headless deployments as well.
+            crate::modules::native_token::start_background_scanner();
             // Initialize states manually
             // [FIX] Initialize log bridge for headless mode
             // Pass a dummy app handle or None since we don't have a Tauri app handle in headless mode
@@ -561,6 +563,9 @@ pub fn run() {
             } else {
                 info!("Tray disabled for this session");
             }
+
+            // 启动原生 Antigravity 客户端 Token 统计后台采集循环 (30秒扫描)
+            crate::modules::native_token::start_background_scanner();
 
             // 立即启动管理服务器 (8045)，以便 Web 端能访问
             let handle = app.handle().clone();
@@ -851,6 +856,15 @@ pub fn run() {
             commands::get_token_stats_account_trend_minute,
             commands::get_token_stats_account_trend_hourly,
             commands::get_token_stats_account_trend_daily,
+            commands::clear_token_stats,
+            commands::get_native_collector_status,
+            commands::set_native_collector_enabled,
+            commands::refresh_native_token_stats,
+            commands::list_native_token_records,
+            commands::assign_native_usage_account,
+            commands::unassign_native_usage_account,
+            commands::batch_assign_native_usage,
+            commands::batch_unassign_native_usage,
             proxy::cli_sync::get_cli_sync_status,
             proxy::cli_sync::execute_cli_sync,
             proxy::cli_sync::execute_cli_restore,

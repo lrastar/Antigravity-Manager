@@ -11,7 +11,7 @@ import {
 } from 'lucide-react';
 import { HourlyUsagePoint } from './HourlyTrendBarCard';
 import { ModelShareItem } from './TopModelsShareCard';
-import { AccountTokenStats } from '../../pages/TokenStats';
+import { AccountTokenStats, TokenStatsSource } from '../../pages/TokenStats';
 import { request as invoke } from '../../utils/request';
 import { UserTokenStatsModal, UserTokenSummaryItem } from '../user_tokens/UserTokenStatsModal';
 
@@ -22,11 +22,14 @@ interface TokenStatsSummary {
     total_reasoning_tokens?: number;
     total_tokens: number;
     total_requests: number;
+    total_native_generations?: number;
     unique_accounts: number;
+    proxy_total_tokens?: number;
 }
 
 interface CyberCockpitViewProps {
     summary: TokenStatsSummary | null;
+    source?: TokenStatsSource;
     hourlyData: HourlyUsagePoint[];
     timelineData?: any[];
     modelShareItems: ModelShareItem[];
@@ -59,6 +62,7 @@ const MODEL_NEON_COLORS = ['#10b981', '#3b82f6', '#a855f7', '#f59e0b', '#ec4899'
 
 export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
     summary,
+    source = 'all',
     hourlyData = [],
     modelShareItems = [],
     accountData = [],
@@ -119,18 +123,24 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
 
     // 2. 均次负载与真实未缓存输入
     const deepMetrics = useMemo(() => {
-        const totalReqs = summary?.total_requests || 1;
+        const proxyReqs = summary?.total_requests || 0;
+        const nativeGens = summary?.total_native_generations || 0;
+        const totalCalls = source === 'antigravity'
+            ? (nativeGens || 1)
+            : source === 'all'
+            ? ((proxyReqs + nativeGens) || 1)
+            : (proxyReqs || 1);
         const totalTokens = summary?.total_tokens || 0;
         const totalInput = summary?.total_input_tokens || 0;
         const totalOutput = summary?.total_output_tokens || 0;
         const totalCached = summary?.total_cached_tokens || 0;
         const totalReasoning = summary?.total_reasoning_tokens || 0;
 
-        const avgTokensPerReq = Math.round(totalTokens / totalReqs);
+        const avgTokensPerReq = Math.round(totalTokens / totalCalls);
         const uncachedInput = Math.max(0, totalInput - totalCached);
-        const avgCostPerReq = totalReqs > 0 ? totalEstimatedCost / totalReqs : 0;
+        const avgCostPerReq = proxyReqs > 0 ? totalEstimatedCost / proxyReqs : 0;
         const reasoningPctOfOutput = totalOutput > 0 ? Math.round((totalReasoning / totalOutput) * 100) : 0;
-        const avgReasoningPerReq = Math.round(totalReasoning / totalReqs);
+        const avgReasoningPerReq = Math.round(totalReasoning / totalCalls);
 
         return {
             avgTokensPerReq,
@@ -139,8 +149,10 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
             totalReasoning,
             reasoningPctOfOutput,
             avgReasoningPerReq,
+            proxyReqs,
+            nativeGens,
         };
-    }, [summary, totalEstimatedCost]);
+    }, [summary, totalEstimatedCost, source]);
 
     // 3. 核心模型分布及 360 度辐射彩针计算
     const { topModels, radialNeedles } = useMemo(() => {
@@ -284,6 +296,9 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
             const sharePct = Math.round((acc.total_tokens / totalTokens) * 100);
             const relativePct = Math.min(100, Math.round((acc.total_tokens / maxTokens) * 100));
             const isHighConcentration = sharePct >= 45 && sorted.length > 1;
+            const proxyTokens = acc.proxy_total_tokens !== undefined
+                ? acc.proxy_total_tokens
+                : (source === 'antigravity' ? 0 : acc.total_tokens);
 
             return {
                 rank: idx + 1,
@@ -291,14 +306,15 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
                 name: acc.account_email.split('@')[0],
                 tokens: acc.total_tokens,
                 requests: acc.request_count,
+                nativeGenerations: acc.native_generation_count || 0,
                 sharePct,
                 relativePct,
                 isHighConcentration,
                 isPrimary: idx === 0,
-                approxCost: (acc.total_tokens * 2.0) / 1000000,
+                approxCost: (proxyTokens * 2.0) / 1000000,
             };
         });
-    }, [accountData, summary]);
+    }, [accountData, summary, source]);
 
     // 6. 完整模型消耗排行榜
     const allModelsRankList = useMemo(() => {
@@ -315,10 +331,11 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
                 name: m.model,
                 tokens: m.total_tokens,
                 requests: m.request_count,
+                nativeGenerations: m.native_generation_count || 0,
                 sharePct,
                 relativePct,
                 color: MODEL_NEON_COLORS[idx % MODEL_NEON_COLORS.length],
-                approxCost: (m.total_tokens * 2.5) / 1000000,
+                approxCost: m.cost,
             };
         });
     }, [modelShareItems, summary]);
@@ -513,12 +530,12 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
                                 </div>
                             </div>
 
-                            {/* [右 3 列]: 预估总支出 + 均次成本 + 缓存抵扣 + 状态 */}
+                            {/* [右 3 列]: 反代估算费用 + 均次成本 + 缓存抵扣 + 状态 */}
                             <div className="col-span-3 flex flex-col justify-between space-y-2 pl-3 border-l border-gray-100 dark:border-white/[0.06]">
                                 <div>
                                     <div className="flex items-center justify-between">
                                         <span className="text-[11px] font-mono uppercase text-gray-500 dark:text-gray-400">
-                                            {t('token_stats.cockpit_predicted_spend', '预估支出')}
+                                            {t('token_stats.proxy_estimated_cost', '反代估算费用')}
                                         </span>
                                         <button
                                             onClick={() => setShowPricingModal(true)}
@@ -528,19 +545,25 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
                                         </button>
                                     </div>
                                     <div className="text-2xl font-black font-mono text-blue-600 dark:text-emerald-400 leading-none mt-1">
-                                        ${totalEstimatedCost.toFixed(2)}
+                                        {source === 'antigravity'
+                                            ? t('token_stats.unavailable', '不可用')
+                                            : `$${totalEstimatedCost.toFixed(2)}`}
                                     </div>
                                     <div className="text-[10px] text-gray-500 dark:text-gray-400 font-mono mt-0.5">
-                                        {t('token_stats.cockpit_avg_per_req', '均次')} ~${deepMetrics.avgCostPerReq < 0.01 ? deepMetrics.avgCostPerReq.toFixed(4) : deepMetrics.avgCostPerReq.toFixed(3)} / req
+                                        {source === 'antigravity'
+                                            ? t('token_stats.native_cost_unavailable_short', '原生用量不换算官方账单')
+                                            : `${t('token_stats.cockpit_avg_per_req', '反代均次')} ~$${deepMetrics.avgCostPerReq < 0.01 ? deepMetrics.avgCostPerReq.toFixed(4) : deepMetrics.avgCostPerReq.toFixed(3)} / req`}
                                     </div>
                                 </div>
 
                                 <div>
                                     <div className="text-[11px] font-mono uppercase text-gray-500 dark:text-gray-400">
-                                        {t('token_stats.cockpit_cache_saved', '缓存节省')}
+                                        {t('token_stats.cockpit_cache_saved', '反代缓存节省')}
                                     </div>
                                     <div className="text-xl font-bold font-mono text-teal-600 dark:text-cyan-400 leading-none mt-0.5">
-                                        +${cacheMetrics.savings.toFixed(2)}
+                                        {source === 'antigravity'
+                                            ? t('token_stats.unavailable', '不可用')
+                                            : `+$${cacheMetrics.savings.toFixed(2)}`}
                                     </div>
                                     <div className="text-[10px] text-gray-500 dark:text-gray-400 font-mono">
                                         {t('token_stats.cockpit_hit_rate_badge', {
@@ -551,7 +574,13 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
                                 </div>
 
                                 <div className="pt-1 border-t border-gray-100 dark:border-white/[0.06] text-[10px] font-mono text-gray-500 dark:text-gray-400">
-                                    <span>{t('token_stats.cockpit_status_normal', '网关调用正常')}</span>
+                                    <span>
+                                        {source === 'antigravity'
+                                            ? `${t('token_stats.model_generations', '模型生成次数')}: ${deepMetrics.nativeGens}`
+                                            : source === 'all'
+                                            ? `反代 ${deepMetrics.proxyReqs} / 原生 ${deepMetrics.nativeGens}`
+                                            : `${t('token_stats.requests', '请求数')}: ${deepMetrics.proxyReqs}`}
+                                    </span>
                                 </div>
                             </div>
                         </div>
@@ -703,7 +732,9 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
                             <div className="shrink-0 pt-1.5 border-t border-gray-100 dark:border-white/[0.06] flex items-center justify-between text-[11px] font-mono text-gray-500 dark:text-gray-400">
                                 <span>{t('token_stats.cockpit_uncached_input', '未缓存输入')}: <strong className="text-gray-800 dark:text-white font-mono">{formatNumber(deepMetrics.uncachedInput)}</strong></span>
                                 <span className="text-teal-600 dark:text-emerald-400 font-bold font-mono">
-                                    +${cacheMetrics.savings.toFixed(2)} {t('token_stats.cockpit_saved_badge', '节省')}
+                                    {source === 'antigravity'
+                                        ? t('token_stats.unavailable', '不可用')
+                                        : `+$${cacheMetrics.savings.toFixed(2)} ${t('token_stats.cockpit_saved_badge', '节省')}`}
                                 </span>
                             </div>
                         </div>
@@ -809,13 +840,21 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
                                         </div>
 
                                         <div className="flex items-center justify-between text-[10px] font-mono text-gray-500 dark:text-gray-400">
-                                            <span>{t('token_stats.percentage', '占比')}: {acc.sharePct}% ({acc.requests} {t('token_stats.times', '次')})</span>
+                                            <span>
+                                                {t('token_stats.percentage', '占比')}: {acc.sharePct}% (
+                                                {source === 'antigravity'
+                                                    ? `${acc.nativeGenerations} ${t('token_stats.times_gen', '次生成')}`
+                                                    : source === 'all'
+                                                    ? `${acc.requests}/${acc.nativeGenerations} ${t('token_stats.times', '次')}`
+                                                    : `${acc.requests} ${t('token_stats.times', '次')}`}
+                                                )
+                                            </span>
                                             {acc.isHighConcentration ? (
                                                 <span className="text-amber-600 dark:text-amber-400 font-bold flex items-center gap-0.5">
                                                     <AlertTriangle className="w-3 h-3" /> {t('token_stats.cockpit_high_concentration', '流量高度集中')}
                                                 </span>
                                             ) : (
-                                                <span>~${acc.approxCost.toFixed(2)}</span>
+                                                <span>{source === 'antigravity' ? t('token_stats.unavailable', '不可用') : `~$${acc.approxCost.toFixed(2)}`}</span>
                                             )}
                                         </div>
                                     </div>
@@ -864,8 +903,16 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
                                         </div>
 
                                         <div className="flex items-center justify-between text-[10px] font-mono text-gray-500 dark:text-gray-400">
-                                            <span>{t('token_stats.percentage', '占比')}: {m.sharePct}% ({m.requests} {t('token_stats.times', '次')})</span>
-                                            <span>~${m.approxCost.toFixed(2)}</span>
+                                            <span>
+                                                {t('token_stats.percentage', '占比')}: {m.sharePct}% (
+                                                {source === 'antigravity'
+                                                    ? `${m.nativeGenerations} ${t('token_stats.times_gen', '次生成')}`
+                                                    : source === 'all'
+                                                    ? `${m.requests}/${m.nativeGenerations} ${t('token_stats.times', '次')}`
+                                                    : `${m.requests} ${t('token_stats.times', '次')}`}
+                                                )
+                                            </span>
+                                            <span>{source === 'antigravity' ? t('token_stats.unavailable', '不可用') : `~$${m.approxCost.toFixed(2)}`}</span>
                                         </div>
                                     </div>
                                 ))

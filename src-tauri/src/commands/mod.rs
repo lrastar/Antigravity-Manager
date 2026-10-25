@@ -1596,90 +1596,175 @@ pub async fn save_http_api_settings(
 // Token Statistics Commands
 // ============================================================================
 
-pub use crate::modules::token_stats::{AccountTokenStats, TokenStatsAggregated, TokenStatsSummary};
+pub use crate::modules::token_stats::{
+    AccountTokenStats, AccountTrendPoint, ModelTokenStats, ModelTrendPoint, TokenStatsAggregated,
+    TokenStatsSummary,
+};
+pub use crate::modules::native_token::{NativeCollectorStatus, NativeRecordsPage};
 
 #[tauri::command]
 pub async fn get_token_stats_minute(
     minutes: i64,
     step_minutes: i64,
+    source: Option<String>,
 ) -> Result<Vec<TokenStatsAggregated>, String> {
-    crate::modules::token_stats::get_minute_stats(minutes, step_minutes)
+    crate::modules::token_stats::get_minute_stats(minutes, step_minutes, source.as_deref())
 }
 
 #[tauri::command]
-pub async fn get_token_stats_hourly(hours: i64) -> Result<Vec<TokenStatsAggregated>, String> {
-    crate::modules::token_stats::get_hourly_stats(hours)
+pub async fn get_token_stats_hourly(
+    hours: i64,
+    source: Option<String>,
+) -> Result<Vec<TokenStatsAggregated>, String> {
+    crate::modules::token_stats::get_hourly_stats(hours, source.as_deref())
 }
 
 #[tauri::command]
-pub async fn get_token_stats_daily(days: i64) -> Result<Vec<TokenStatsAggregated>, String> {
-    crate::modules::token_stats::get_daily_stats(days)
+pub async fn get_token_stats_daily(
+    days: i64,
+    source: Option<String>,
+) -> Result<Vec<TokenStatsAggregated>, String> {
+    crate::modules::token_stats::get_daily_stats(days, source.as_deref())
 }
 
 #[tauri::command]
-pub async fn get_token_stats_weekly(weeks: i64) -> Result<Vec<TokenStatsAggregated>, String> {
-    crate::modules::token_stats::get_weekly_stats(weeks)
+pub async fn get_token_stats_weekly(
+    weeks: i64,
+    source: Option<String>,
+) -> Result<Vec<TokenStatsAggregated>, String> {
+    crate::modules::token_stats::get_weekly_stats(weeks, source.as_deref())
 }
 
 #[tauri::command]
-pub async fn get_token_stats_by_account(hours: i64) -> Result<Vec<AccountTokenStats>, String> {
-    crate::modules::token_stats::get_account_stats(hours)
+pub async fn get_token_stats_by_account(
+    hours: i64,
+    source: Option<String>,
+) -> Result<Vec<AccountTokenStats>, String> {
+    crate::modules::token_stats::get_account_stats(hours, source.as_deref())
 }
 
 #[tauri::command]
-pub async fn get_token_stats_summary(hours: i64) -> Result<TokenStatsSummary, String> {
-    crate::modules::token_stats::get_summary_stats(hours)
+pub async fn get_token_stats_summary(
+    hours: i64,
+    source: Option<String>,
+) -> Result<TokenStatsSummary, String> {
+    crate::modules::token_stats::get_summary_stats(hours, source.as_deref())
 }
 
 #[tauri::command]
 pub async fn get_token_stats_by_model(
     hours: i64,
-) -> Result<Vec<crate::modules::token_stats::ModelTokenStats>, String> {
-    crate::modules::token_stats::get_model_stats(hours)
+    source: Option<String>,
+) -> Result<Vec<ModelTokenStats>, String> {
+    crate::modules::token_stats::get_model_stats(hours, source.as_deref())
 }
 
 #[tauri::command]
 pub async fn get_token_stats_model_trend_minute(
     minutes: i64,
     step_minutes: i64,
-) -> Result<Vec<crate::modules::token_stats::ModelTrendPoint>, String> {
-    crate::modules::token_stats::get_model_trend_minute(minutes, step_minutes)
+    source: Option<String>,
+) -> Result<Vec<ModelTrendPoint>, String> {
+    crate::modules::token_stats::get_model_trend_minute(minutes, step_minutes, source.as_deref())
 }
 
 #[tauri::command]
 pub async fn get_token_stats_model_trend_hourly(
     hours: i64,
-) -> Result<Vec<crate::modules::token_stats::ModelTrendPoint>, String> {
-    crate::modules::token_stats::get_model_trend_hourly(hours)
+    source: Option<String>,
+) -> Result<Vec<ModelTrendPoint>, String> {
+    crate::modules::token_stats::get_model_trend_hourly(hours, source.as_deref())
 }
 
 #[tauri::command]
 pub async fn get_token_stats_model_trend_daily(
     days: i64,
-) -> Result<Vec<crate::modules::token_stats::ModelTrendPoint>, String> {
-    crate::modules::token_stats::get_model_trend_daily(days)
+    source: Option<String>,
+) -> Result<Vec<ModelTrendPoint>, String> {
+    crate::modules::token_stats::get_model_trend_daily(days, source.as_deref())
 }
 
 #[tauri::command]
 pub async fn get_token_stats_account_trend_minute(
     minutes: i64,
     step_minutes: i64,
-) -> Result<Vec<crate::modules::token_stats::AccountTrendPoint>, String> {
-    crate::modules::token_stats::get_account_trend_minute(minutes, step_minutes)
+    source: Option<String>,
+) -> Result<Vec<AccountTrendPoint>, String> {
+    crate::modules::token_stats::get_account_trend_minute(minutes, step_minutes, source.as_deref())
 }
 
 #[tauri::command]
 pub async fn get_token_stats_account_trend_hourly(
     hours: i64,
-) -> Result<Vec<crate::modules::token_stats::AccountTrendPoint>, String> {
-    crate::modules::token_stats::get_account_trend_hourly(hours)
+    source: Option<String>,
+) -> Result<Vec<AccountTrendPoint>, String> {
+    crate::modules::token_stats::get_account_trend_hourly(hours, source.as_deref())
 }
 
 #[tauri::command]
 pub async fn get_token_stats_account_trend_daily(
     days: i64,
-) -> Result<Vec<crate::modules::token_stats::AccountTrendPoint>, String> {
-    crate::modules::token_stats::get_account_trend_daily(days)
+    source: Option<String>,
+) -> Result<Vec<AccountTrendPoint>, String> {
+    crate::modules::token_stats::get_account_trend_daily(days, source.as_deref())
+}
+
+#[tauri::command]
+pub async fn clear_token_stats(source: Option<String>) -> Result<(), String> {
+    crate::modules::token_stats::clear_stats(source.as_deref())
+}
+
+// Native Collector Tauri Commands
+#[tauri::command]
+pub async fn get_native_collector_status() -> Result<NativeCollectorStatus, String> {
+    crate::modules::native_token::get_status()
+}
+
+#[tauri::command]
+pub async fn set_native_collector_enabled(enabled: bool) -> Result<(), String> {
+    crate::modules::native_token::set_enabled(enabled)
+}
+
+#[tauri::command]
+pub async fn refresh_native_token_stats() -> Result<NativeCollectorStatus, String> {
+    tokio::task::spawn_blocking(|| crate::modules::native_token::scan_native_conversations())
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn list_native_token_records(
+    limit: i64,
+    offset: i64,
+    search: Option<String>,
+) -> Result<NativeRecordsPage, String> {
+    crate::modules::native_token::list_native_records(limit, offset, search)
+}
+
+#[tauri::command]
+pub async fn assign_native_usage_account(
+    record_key: String,
+    account_email: String,
+) -> Result<(), String> {
+    crate::modules::native_token::assign_record_account(&record_key, &account_email)
+}
+
+#[tauri::command]
+pub async fn unassign_native_usage_account(record_key: String) -> Result<(), String> {
+    crate::modules::native_token::unassign_record_account(&record_key)
+}
+
+#[tauri::command]
+pub async fn batch_assign_native_usage(
+    record_keys: Vec<String>,
+    account_email: String,
+) -> Result<(), String> {
+    crate::modules::native_token::batch_assign_record_account(&record_keys, &account_email)
+}
+
+#[tauri::command]
+pub async fn batch_unassign_native_usage(record_keys: Vec<String>) -> Result<(), String> {
+    crate::modules::native_token::batch_unassign_record_account(&record_keys)
 }
 
 #[tauri::command]
@@ -1713,6 +1798,7 @@ pub async fn exit_app(app: tauri::AppHandle) -> Result<(), String> {
     use tauri::Manager;
     tauri::async_runtime::spawn(async move {
         tracing::info!("[Command] 退出应用触发，开始全面清理服务与端口...");
+        let _ = crate::modules::native_token::close_active_observation_window();
 
         let state = app.state::<crate::commands::proxy::ProxyServiceState>();
         let cf_state = app.state::<crate::commands::cloudflared::CloudflaredState>();

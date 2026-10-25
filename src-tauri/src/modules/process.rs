@@ -711,6 +711,141 @@ pub fn wait_for_language_server_respawn(target_ide: Option<&str>, timeout_secs: 
     false
 }
 
+/// 原生客户端 (`classic`) 进程身份快照（绑定主进程与 language_server 子进程的 PID 与启动时间）
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClassicProcessIdentity {
+    pub main_pid: u32,
+    pub main_start_time: u64,
+    pub ls_pid: Option<u32>,
+    pub ls_start_time: Option<u64>,
+}
+
+/// 获取当前正在运行的原生客户端 (`classic`) 的唯一进程身份。
+/// 若原生客户端未运行、或存在多个相互独立的实例导致身份不明，返回 `None`。
+pub fn get_classic_process_identity() -> Option<ClassicProcessIdentity> {
+    let mut system = System::new();
+    system.refresh_processes(sysinfo::ProcessesToUpdate::All);
+
+    let root_pids: Vec<u32> = get_antigravity_pids(Some("classic"))
+        .into_iter()
+        .filter(|pid| {
+            system
+                .process(sysinfo::Pid::from_u32(*pid))
+                .map(|process| {
+                    let name = process.name().to_string_lossy().to_string();
+                    let args = process
+                        .cmd()
+                        .iter()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    let exe = process
+                        .exe()
+                        .map(|e| e.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    !is_helper_process(&name, &args, &exe)
+                })
+                .unwrap_or(false)
+        })
+        .collect();
+
+    if root_pids.is_empty() {
+        return None;
+    }
+
+    let root_set: std::collections::HashSet<u32> = root_pids.iter().copied().collect();
+    let mut top_roots: Vec<(u32, u64, String)> = Vec::new();
+    for pid in &root_pids {
+        if let Some(proc_info) = system.process(sysinfo::Pid::from_u32(*pid)) {
+            let parent_in_roots = proc_info
+                .parent()
+                .map(|p| root_set.contains(&p.as_u32()))
+                .unwrap_or(false);
+            if !parent_in_roots {
+                let exe = proc_info
+                    .exe()
+                    .map(|e| e.to_string_lossy().to_lowercase())
+                    .unwrap_or_default();
+                top_roots.push((*pid, proc_info.start_time(), exe));
+            }
+        }
+    }
+
+    if top_roots.is_empty() {
+        for pid in &root_pids {
+            if let Some(proc_info) = system.process(sysinfo::Pid::from_u32(*pid)) {
+                let exe = proc_info
+                    .exe()
+                    .map(|e| e.to_string_lossy().to_lowercase())
+                    .unwrap_or_default();
+                top_roots.push((*pid, proc_info.start_time(), exe));
+            }
+        }
+    }
+
+    if top_roots.is_empty() {
+        return None;
+    }
+
+    // Check if multiple distinct executable paths exist among top roots (ambiguous identity)
+    let first_exe = &top_roots[0].2;
+    if top_roots
+        .iter()
+        .any(|(_, _, exe)| !exe.is_empty() && !first_exe.is_empty() && exe != first_exe)
+    {
+        return None;
+    }
+
+    top_roots.sort_by_key(|(pid, start_time, _)| (*start_time, *pid));
+    let (main_pid, main_start_time, _) = top_roots[0];
+
+    let ls_pids = language_server_subprocess_pids(&system, Some("classic"));
+    let mut ls_infos: Vec<(u32, u64)> = ls_pids
+        .into_iter()
+        .filter_map(|pid| {
+            system
+                .process(sysinfo::Pid::from_u32(pid))
+                .map(|p| (pid, p.start_time()))
+        })
+        .collect();
+    ls_infos.sort_by_key(|(pid, start_time)| (*start_time, *pid));
+
+    // If multiple language_server subprocesses are running simultaneously, identity is ambiguous
+    if ls_infos.len() > 1 {
+        return None;
+    }
+
+    let (ls_pid, ls_start_time) = ls_infos
+        .first()
+        .map(|(p, st)| (Some(*p), Some(*st)))
+        .unwrap_or((None, None));
+
+    Some(ClassicProcessIdentity {
+        main_pid,
+        main_start_time,
+        ls_pid,
+        ls_start_time,
+    })
+}
+
+/// 等待原生客户端 (`classic`) 重建完成并返回其唯一进程身份（有界轮询）
+pub fn wait_for_classic_process_identity(timeout_secs: u64) -> Option<ClassicProcessIdentity> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
+    let mut last_identity: Option<ClassicProcessIdentity> = None;
+
+    while std::time::Instant::now() < deadline {
+        if let Some(id) = get_classic_process_identity() {
+            if id.ls_pid.is_some() {
+                return Some(id);
+            }
+            last_identity = Some(id);
+        }
+        thread::sleep(Duration::from_millis(400));
+    }
+
+    last_identity.or_else(get_classic_process_identity)
+}
+
 /// Close Antigravity processes
 // timeout_secs 仅用于 macos/Linux 分支（graceful_timeout），Windows 分支不使用参数
 #[cfg_attr(target_os = "windows", allow(unused_variables))]

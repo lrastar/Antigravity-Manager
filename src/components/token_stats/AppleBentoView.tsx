@@ -24,7 +24,7 @@ import {
 import { HourlyUsagePoint } from './HourlyTrendBarCard';
 import { ModelShareItem } from './TopModelsShareCard';
 import { DayUsagePoint } from './ActivityHeatmapCard';
-import { AccountTokenStats, TokenStatsAggregated } from '../../pages/TokenStats';
+import { AccountTokenStats, TokenStatsAggregated, TokenStatsSource } from '../../pages/TokenStats';
 
 interface TokenStatsSummary {
     total_input_tokens: number;
@@ -32,11 +32,14 @@ interface TokenStatsSummary {
     total_cached_tokens: number;
     total_tokens: number;
     total_requests: number;
+    total_native_generations?: number;
     unique_accounts: number;
+    proxy_total_tokens?: number;
 }
 
 interface AppleBentoViewProps {
     summary: TokenStatsSummary | null;
+    source?: TokenStatsSource;
     dailyData: DayUsagePoint[];
     hourlyData: HourlyUsagePoint[];
     timelineData?: TokenStatsAggregated[];
@@ -65,6 +68,7 @@ const CHART_PALETTE = ['#0071e3', '#af52de', '#30b0c7', '#34c759', '#ff9500', '#
 
 export const AppleBentoView: React.FC<AppleBentoViewProps> = ({
     summary,
+    source = 'all',
     dailyData,
     hourlyData,
     timelineData,
@@ -325,7 +329,13 @@ export const AppleBentoView: React.FC<AppleBentoViewProps> = ({
         const tokensSeries = sourceData.map((d: any) => d.total_tokens || 0);
         const inputSeries = sourceData.map((d: any) => d.total_input_tokens || d.input_tokens || 0);
         const cacheSeries = sourceData.map((d: any) => d.total_cached_tokens || d.cached_tokens || 0);
-        const requestSeries = sourceData.map((d: any) => d.request_count || 0);
+        const requestSeries = sourceData.map((d: any) =>
+            source === 'antigravity'
+                ? (d.native_generation_count ?? d.request_count ?? 0)
+                : source === 'all'
+                ? ((d.request_count || 0) + (d.native_generation_count || 0))
+                : (d.request_count || 0)
+        );
 
         return {
             tokens: createSmoothPath(tokensSeries, 96, 32),
@@ -333,7 +343,7 @@ export const AppleBentoView: React.FC<AppleBentoViewProps> = ({
             cache: createSmoothPath(cacheSeries, 96, 32),
             network: createSmoothPath(requestSeries, 96, 32),
         };
-    }, [timelineData, dailyData, hourBuckets]);
+    }, [timelineData, dailyData, hourBuckets, source]);
 
     return (
         <div className="space-y-4 font-sans text-gray-900 dark:text-[#f5f5f7]">
@@ -423,11 +433,11 @@ export const AppleBentoView: React.FC<AppleBentoViewProps> = ({
                         </div>
                     </div>
 
-                    {/* Bento 2: 预估花费价值 */}
+                    {/* Bento 2: 反代估算费用 */}
                     <div className="bg-white/95 dark:bg-base-100 backdrop-blur-xl rounded-2xl p-4 sm:p-5 border border-black/[0.05] dark:border-base-200 shadow-sm flex flex-col justify-between transition-all hover:shadow-md relative overflow-hidden group">
                         <div className="flex items-start justify-between">
                             <span className="text-[11px] font-semibold text-emerald-600 dark:text-emerald-400 tracking-wider uppercase">
-                                {t('token_stats.estimated_spending', '预估算支出')}
+                                {t('token_stats.proxy_estimated_cost', '反代估算费用')}
                             </span>
                             {/* 右上方：真实支出走势 Sparkline */}
                             <div className="w-[100px] h-[34px] shrink-0 relative">
@@ -476,10 +486,14 @@ export const AppleBentoView: React.FC<AppleBentoViewProps> = ({
                         {/* 中间主指标 */}
                         <div className="my-2">
                             <div className="text-3xl font-extrabold tracking-tight text-emerald-600 dark:text-emerald-400 font-mono leading-none">
-                                ${totalEstimatedCost.toFixed(2)}
+                                {source === 'antigravity'
+                                    ? t('token_stats.unavailable', '不可用')
+                                    : `$${totalEstimatedCost.toFixed(2)}`}
                             </div>
                             <div className="text-[11px] text-gray-400 dark:text-gray-500 mt-2 truncate">
-                                {t('token_stats.pricing_snapshot_hint', '基于当前单价快照加权累计')}
+                                {source === 'antigravity'
+                                    ? t('token_stats.native_cost_unavailable_note', '原生 Token 不换算官方账单或剩余额度')
+                                    : t('token_stats.pricing_snapshot_hint', '仅按反代用量与当前单价快照估算')}
                             </div>
                         </div>
 
@@ -555,7 +569,9 @@ export const AppleBentoView: React.FC<AppleBentoViewProps> = ({
                                 </span>
                             </div>
                             <div className="text-[11px] text-gray-400 dark:text-gray-500 mt-2 font-mono truncate">
-                                {t('token_stats.saved_funds', '节省资金约 ${{amount}}', { amount: cacheMetrics.savings.toFixed(2) })}
+                                {source === 'antigravity'
+                                    ? t('token_stats.native_cache_reuse_note', '反代缓存节省: 不可用')
+                                    : t('token_stats.saved_funds', '反代节省资金约 ${{amount}}', { amount: cacheMetrics.savings.toFixed(2) })}
                             </div>
                         </div>
 
@@ -636,7 +652,11 @@ export const AppleBentoView: React.FC<AppleBentoViewProps> = ({
                                 </div>
                             </div>
                             <div className="text-[11px] text-gray-400 dark:text-gray-500 mt-2 font-mono truncate">
-                                {t('token_stats.total_interactions', '累计交互请求 {{count}} 轮次', { count: summary.total_requests })}
+                                {source === 'antigravity'
+                                    ? t('token_stats.total_native_generations', '模型生成次数 {{count}} 次', { count: summary.total_native_generations || 0 })
+                                    : source === 'all'
+                                    ? `反代请求 ${summary.total_requests} 轮 / 模型生成 ${summary.total_native_generations || 0} 次`
+                                    : t('token_stats.total_interactions', '累计交互请求 {{count}} 轮次', { count: summary.total_requests })}
                             </div>
                         </div>
 
@@ -813,20 +833,39 @@ export const AppleBentoView: React.FC<AppleBentoViewProps> = ({
                     {/* 宏观效能诊断胶囊双格 */}
                     <div className="grid grid-cols-2 gap-2.5 py-1">
                         <div className="bg-gray-50/80 dark:bg-base-200 rounded-2xl p-2.5 flex flex-col justify-between">
-                            <span className="text-[11px] text-gray-400 dark:text-gray-400">{t('token_stats.avg_interaction', '平均单次交互量')}</span>
+                            <span className="text-[11px] text-gray-400 dark:text-gray-400">
+                                {source === 'antigravity'
+                                    ? t('token_stats.avg_generation_tokens', '平均单次生成量')
+                                    : t('token_stats.avg_interaction', '平均单次交互量')}
+                            </span>
                             <span className="text-base font-bold font-mono text-gray-900 dark:text-base-content mt-0.5">
-                                {summary && summary.total_requests > 0
-                                    ? formatNumber(Math.round(summary.total_tokens / summary.total_requests))
-                                    : '0'} <span className="text-[10px] font-normal text-gray-400">Tokens</span>
+                                {(() => {
+                                    const calls = source === 'antigravity'
+                                        ? (summary?.total_native_generations || 0)
+                                        : source === 'all'
+                                        ? ((summary?.total_requests || 0) + (summary?.total_native_generations || 0))
+                                        : (summary?.total_requests || 0);
+                                    return summary && calls > 0
+                                        ? formatNumber(Math.round(summary.total_tokens / calls))
+                                        : '0';
+                                })()}{' '}
+                                <span className="text-[10px] font-normal text-gray-400">Tokens</span>
                             </span>
                         </div>
 
                         <div className="bg-gray-50/80 dark:bg-base-200 rounded-2xl p-2.5 flex flex-col justify-between">
-                            <span className="text-[11px] text-gray-400 dark:text-gray-400">{t('token_stats.cost_per_million', '单位百万人次成本')}</span>
+                            <span className="text-[11px] text-gray-400 dark:text-gray-400">{t('token_stats.cost_per_million', '反代百万Token成本')}</span>
                             <span className="text-base font-bold font-mono text-emerald-600 dark:text-emerald-400 mt-0.5">
-                                {summary && summary.total_tokens > 0
-                                    ? `$${((totalEstimatedCost / summary.total_tokens) * 1_000_000).toFixed(2)}`
-                                    : '$0.00'} <span className="text-[10px] font-normal text-gray-400">/ 1M</span>
+                                {source === 'antigravity' ? (
+                                    t('token_stats.unavailable', '不可用')
+                                ) : (
+                                    <>
+                                        {summary && (summary.proxy_total_tokens ?? summary.total_tokens) > 0
+                                            ? `$${((totalEstimatedCost / (summary.proxy_total_tokens ?? summary.total_tokens)) * 1_000_000).toFixed(2)}`
+                                            : '$0.00'}{' '}
+                                        <span className="text-[10px] font-normal text-gray-400">/ 1M</span>
+                                    </>
+                                )}
                             </span>
                         </div>
                     </div>
@@ -900,7 +939,11 @@ export const AppleBentoView: React.FC<AppleBentoViewProps> = ({
 
                     <div className="flex items-center justify-between text-[11px] font-mono text-gray-400 dark:text-gray-500 pt-2.5 border-t border-black/[0.03] dark:border-base-200">
                         <span>{t('token_stats.top_models_load', 'Top 5 模型承载大部负荷')}</span>
-                        <span>{t('token_stats.cost_accumulated', '费用累计: ${{amount}}', { amount: topModels.reduce((acc, cur) => acc + cur.cost, 0).toFixed(2) })}</span>
+                        <span>
+                            {source === 'antigravity'
+                                ? `${t('token_stats.proxy_estimated_cost', '反代估算费用')}: ${t('token_stats.unavailable', '不可用')}`
+                                : t('token_stats.cost_accumulated', '反代费用累计: ${{amount}}', { amount: topModels.reduce((acc, cur) => acc + cur.cost, 0).toFixed(2) })}
+                        </span>
                     </div>
                 </div>
 
@@ -954,7 +997,11 @@ export const AppleBentoView: React.FC<AppleBentoViewProps> = ({
                                                 {formatNumber(acc.total_tokens)}
                                             </span>
                                             <span className="text-[10px] text-gray-400">
-                                                {acc.request_count} {t('token_stats.times', '次')}
+                                                {source === 'antigravity'
+                                                    ? `${acc.native_generation_count || 0} ${t('token_stats.times_gen', '次生成')}`
+                                                    : source === 'all'
+                                                    ? `${acc.request_count}/${acc.native_generation_count || 0} ${t('token_stats.times', '次')}`
+                                                    : `${acc.request_count} ${t('token_stats.times', '次')}`}
                                             </span>
                                         </div>
                                     </div>

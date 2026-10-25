@@ -6,6 +6,7 @@ export interface ModelShareItem {
     model: string;
     total_tokens: number;
     request_count: number;
+    native_generation_count?: number;
     total_input_tokens: number;
     total_output_tokens: number;
     total_cached_tokens: number;

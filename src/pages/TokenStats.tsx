@@ -39,6 +39,11 @@ import type { ModelShareItem } from '../components/token_stats/TopModelsShareCar
 import { AppleBentoView } from '../components/token_stats/AppleBentoView';
 import { CyberCockpitView } from '../components/token_stats/CyberCockpitView';
 import { PricingModal } from '../components/token_stats/PricingModal';
+import { NativeTokenModal, NativeCollectorStatus } from '../components/token_stats/NativeTokenModal';
+import { TokenThroughputBadge, TokenThroughputSummary } from '../components/token_stats/TokenThroughputBadge';
+
+export type TokenStatsSource = 'all' | 'proxy' | 'antigravity';
+const SOURCE_STORAGE_KEY = 'antigravity_token_stats_source';
 
 export interface TokenStatsAggregated {
     period: string;
@@ -48,6 +53,7 @@ export interface TokenStatsAggregated {
     total_reasoning_tokens?: number;
     total_tokens: number;
     request_count: number;
+    native_generation_count?: number;
     uncached_input_tokens?: number;
 }
 
@@ -59,6 +65,11 @@ export interface AccountTokenStats {
     total_reasoning_tokens?: number;
     total_tokens: number;
     request_count: number;
+    native_generation_count?: number;
+    proxy_input_tokens?: number;
+    proxy_output_tokens?: number;
+    proxy_cached_tokens?: number;
+    proxy_total_tokens?: number;
 }
 
 export interface ModelTokenStats {
@@ -69,6 +80,11 @@ export interface ModelTokenStats {
     total_reasoning_tokens?: number;
     total_tokens: number;
     request_count: number;
+    native_generation_count?: number;
+    proxy_input_tokens?: number;
+    proxy_output_tokens?: number;
+    proxy_cached_tokens?: number;
+    proxy_total_tokens?: number;
 }
 
 export interface ModelTrendPoint {
@@ -82,13 +98,20 @@ export interface AccountTrendPoint {
 }
 
 export interface TokenStatsSummary {
+    throughput?: TokenThroughputSummary | null;
     total_input_tokens: number;
     total_output_tokens: number;
     total_cached_tokens: number;
     total_reasoning_tokens?: number;
     total_tokens: number;
     total_requests: number;
+    total_native_generations?: number;
     unique_accounts: number;
+    unassigned_tokens?: number;
+    proxy_input_tokens?: number;
+    proxy_output_tokens?: number;
+    proxy_cached_tokens?: number;
+    proxy_total_tokens?: number;
 }
 
 export interface ModelPricingRule {
@@ -195,6 +218,47 @@ const TokenStats: React.FC = () => {
         },
         [t]
     );
+
+    const [source, setSource] = useState<TokenStatsSource>(() => {
+        try {
+            const saved = localStorage.getItem(SOURCE_STORAGE_KEY);
+            if (saved === 'all' || saved === 'proxy' || saved === 'antigravity') return saved;
+        } catch (e) {}
+        return 'all';
+    });
+
+    const switchSource = useCallback((newSource: TokenStatsSource) => {
+        setSource(newSource);
+        try {
+            localStorage.setItem(SOURCE_STORAGE_KEY, newSource);
+        } catch (e) {}
+    }, []);
+
+    const [showNativeModal, setShowNativeModal] = useState(false);
+    const [nativeStatus, setNativeStatus] = useState<NativeCollectorStatus | null>(null);
+    const nativeStatusRequestRef = useRef(0);
+    const nativeStatusInFlightRef = useRef(false);
+
+    const loadNativeStatus = useCallback(async (dedupe = false) => {
+        if (dedupe && nativeStatusInFlightRef.current) return;
+        nativeStatusInFlightRef.current = true;
+        const requestId = ++nativeStatusRequestRef.current;
+        try {
+            const res = await invoke<NativeCollectorStatus>('get_native_collector_status');
+            if (requestId === nativeStatusRequestRef.current) setNativeStatus(res);
+        } catch (e) {}
+        finally {
+            if (requestId === nativeStatusRequestRef.current) nativeStatusInFlightRef.current = false;
+        }
+    }, []);
+
+    useEffect(() => {
+        loadNativeStatus();
+        return () => {
+            nativeStatusRequestRef.current += 1;
+            nativeStatusInFlightRef.current = false;
+        };
+    }, [loadNativeStatus]);
 
     const [timeRange, setTimeRange] = useState<TimeRange>(() => {
         try {
@@ -317,6 +381,8 @@ const TokenStats: React.FC = () => {
     const [allAccounts, setAllAccounts] = useState<string[]>([]);
     const [summary, setSummary] = useState<TokenStatsSummary | null>(null);
     const [loading, setLoading] = useState(true);
+    const statsFiltersRef = useRef({ timeRange, minuteSpan, source, metricType });
+    statsFiltersRef.current = { timeRange, minuteSpan, source, metricType };
 
     // 经典模式专属堆叠图数据
     const [classicChartData, setClassicChartData] = useState<TokenStatsAggregated[]>([]);
@@ -362,30 +428,37 @@ const TokenStats: React.FC = () => {
     }, [pricing]);
 
     const calculateModelCost = useCallback((m: ModelTokenStats): number => {
+        // 费用区仅估算反代用量，不将原生客户端 token 换算成账单
+        if (source === 'antigravity') return 0;
         const p = getPricing(m.model);
-        const uncachedInput = Math.max(0, m.total_input_tokens - (m.total_cached_tokens || 0));
+        const proxyInput = m.proxy_input_tokens !== undefined ? m.proxy_input_tokens : m.total_input_tokens;
+        const proxyCached = m.proxy_cached_tokens !== undefined ? m.proxy_cached_tokens : (m.total_cached_tokens || 0);
+        const proxyOutput = m.proxy_output_tokens !== undefined ? m.proxy_output_tokens : m.total_output_tokens;
+        const uncachedInput = Math.max(0, proxyInput - proxyCached);
         const inputCost = (uncachedInput * p.input) / 1_000_000;
-        const cacheCost = ((m.total_cached_tokens || 0) * p.cached) / 1_000_000;
-        const outputCost = (m.total_output_tokens * p.output) / 1_000_000;
+        const cacheCost = (proxyCached * p.cached) / 1_000_000;
+        const outputCost = (proxyOutput * p.output) / 1_000_000;
         return inputCost + cacheCost + outputCost;
-    }, [getPricing]);
+    }, [getPricing, source]);
 
     const totalEstimatedCost = useMemo(() => {
+        if (source === 'antigravity') return 0;
         return modelData.reduce((sum, m) => sum + calculateModelCost(m), 0);
-    }, [modelData, calculateModelCost]);
+    }, [modelData, calculateModelCost, source]);
 
     // 主力模型列表数据（带单项费用）
     const modelShareItems: ModelShareItem[] = useMemo(() => {
         return modelData.map(m => ({
             model: m.model,
             total_tokens: m.total_tokens,
-            request_count: m.request_count,
+            request_count: source === 'antigravity' ? (m.native_generation_count || 0) : m.request_count,
+            native_generation_count: m.native_generation_count || 0,
             total_input_tokens: m.total_input_tokens,
             total_output_tokens: m.total_output_tokens,
             total_cached_tokens: m.total_cached_tokens,
             cost: calculateModelCost(m),
         }));
-    }, [modelData, calculateModelCost]);
+    }, [modelData, calculateModelCost, source]);
 
     // 经典模式分账号饼图数据
     const pieData = useMemo(() => {
@@ -397,21 +470,35 @@ const TokenStats: React.FC = () => {
         }));
     }, [accountData]);
 
-    // 缓存命中率与节约成本估算
+    // 缓存命中率与节约成本估算（费用节约仅计反代缓存）
     const cacheMetrics = useMemo(() => {
         if (!summary || summary.total_tokens === 0) return { hitRate: 0, savings: 0 };
         const totalInput = summary.total_input_tokens;
         const cached = summary.total_cached_tokens;
         const hitRate = totalInput > 0 ? (cached / totalInput) * 100 : 0;
-        // 估算节约：假设平均每 1M 缓存相比直接输入节省约 $1.50
-        const savings = (cached * 1.5) / 1_000_000;
+        const proxyCached = source === 'antigravity'
+            ? 0
+            : (summary.proxy_cached_tokens !== undefined ? summary.proxy_cached_tokens : cached);
+        // 估算节约：仅针对反代缓存估算，假设平均每 1M 缓存相比直接输入节省约 $1.50
+        const savings = (proxyCached * 1.5) / 1_000_000;
         return { hitRate, savings };
-    }, [summary]);
+    }, [summary, source]);
 
-    const fetchData = async () => {
-        setLoading(true);
+    const statsRequestRef = useRef(0);
+    const statsPollInFlightRef = useRef(false);
+    const fetchData = useCallback(async ({ silent = false }: { silent?: boolean } = {}) => {
+        const requestId = ++statsRequestRef.current;
+        const isCurrent = () =>
+            requestId === statsRequestRef.current &&
+            statsFiltersRef.current.timeRange === timeRange &&
+            statsFiltersRef.current.minuteSpan === minuteSpan &&
+            statsFiltersRef.current.source === source &&
+            statsFiltersRef.current.metricType === metricType;
+        if (!silent) setLoading(true);
         try {
             let hours = 24;
+            // Money trends use proxy-only points even when the usage dashboard combines sources.
+            const trendSource = source === 'all' && metricType === 'cost' ? 'proxy' : source;
             let modelTrend: ModelTrendPoint[] = [];
             let accountTrend: AccountTrendPoint[] = [];
             let classicDataPromise: Promise<TokenStatsAggregated[]>;
@@ -421,27 +508,27 @@ const TokenStats: React.FC = () => {
                     const minutes = minuteSpan === '1h' ? 60 : 1440;
                     const stepMinutes = minuteSpan === '1h' ? 1 : 5;
                     hours = minuteSpan === '1h' ? 1 : 24;
-                    modelTrend = await invoke<ModelTrendPoint[]>('get_token_stats_model_trend_minute', { minutes, stepMinutes });
-                    accountTrend = await invoke<AccountTrendPoint[]>('get_token_stats_account_trend_minute', { minutes, stepMinutes });
-                    classicDataPromise = invoke<TokenStatsAggregated[]>('get_token_stats_minute', { minutes, stepMinutes });
+                    modelTrend = await invoke<ModelTrendPoint[]>('get_token_stats_model_trend_minute', { minutes, stepMinutes, source: trendSource });
+                    accountTrend = await invoke<AccountTrendPoint[]>('get_token_stats_account_trend_minute', { minutes, stepMinutes, source: trendSource });
+                    classicDataPromise = invoke<TokenStatsAggregated[]>('get_token_stats_minute', { minutes, stepMinutes, source });
                     break;
                 case 'hourly':
                     hours = 24;
-                    modelTrend = await invoke<ModelTrendPoint[]>('get_token_stats_model_trend_hourly', { hours: 24 });
-                    accountTrend = await invoke<AccountTrendPoint[]>('get_token_stats_account_trend_hourly', { hours: 24 });
-                    classicDataPromise = invoke<TokenStatsAggregated[]>('get_token_stats_hourly', { hours: 24 });
+                    modelTrend = await invoke<ModelTrendPoint[]>('get_token_stats_model_trend_hourly', { hours: 24, source: trendSource });
+                    accountTrend = await invoke<AccountTrendPoint[]>('get_token_stats_account_trend_hourly', { hours: 24, source: trendSource });
+                    classicDataPromise = invoke<TokenStatsAggregated[]>('get_token_stats_hourly', { hours: 24, source });
                     break;
                 case 'daily':
                     hours = 336; // 14 天 (2 周)
-                    modelTrend = await invoke<ModelTrendPoint[]>('get_token_stats_model_trend_daily', { days: 14 });
-                    accountTrend = await invoke<AccountTrendPoint[]>('get_token_stats_account_trend_daily', { days: 14 });
-                    classicDataPromise = invoke<TokenStatsAggregated[]>('get_token_stats_daily', { days: 14 });
+                    modelTrend = await invoke<ModelTrendPoint[]>('get_token_stats_model_trend_daily', { days: 14, source: trendSource });
+                    accountTrend = await invoke<AccountTrendPoint[]>('get_token_stats_account_trend_daily', { days: 14, source: trendSource });
+                    classicDataPromise = invoke<TokenStatsAggregated[]>('get_token_stats_daily', { days: 14, source });
                     break;
                 case 'weekly':
                     hours = 2016; // 12 周 (约 3 个月 = 84 天)
-                    const rawDailyModelTrend = await invoke<ModelTrendPoint[]>('get_token_stats_model_trend_daily', { days: 84 });
-                    const rawDailyAccountTrend = await invoke<AccountTrendPoint[]>('get_token_stats_account_trend_daily', { days: 84 });
-                    classicDataPromise = invoke<TokenStatsAggregated[]>('get_token_stats_weekly', { weeks: 12 });
+                    const rawDailyModelTrend = await invoke<ModelTrendPoint[]>('get_token_stats_model_trend_daily', { days: 84, source: trendSource });
+                    const rawDailyAccountTrend = await invoke<AccountTrendPoint[]>('get_token_stats_account_trend_daily', { days: 84, source: trendSource });
+                    classicDataPromise = invoke<TokenStatsAggregated[]>('get_token_stats_weekly', { weeks: 12, source });
 
                     // 按周合并聚合 modelTrend
                     const weeklyModelMap = new Map<string, Record<string, number>>();
@@ -473,11 +560,13 @@ const TokenStats: React.FC = () => {
                     break;
                 case 'all':
                     hours = 0; // 0 表示查询全部历史
-                    modelTrend = await invoke<ModelTrendPoint[]>('get_token_stats_model_trend_daily', { days: 0 });
-                    accountTrend = await invoke<AccountTrendPoint[]>('get_token_stats_account_trend_daily', { days: 0 });
-                    classicDataPromise = invoke<TokenStatsAggregated[]>('get_token_stats_daily', { days: 0 });
+                    modelTrend = await invoke<ModelTrendPoint[]>('get_token_stats_model_trend_daily', { days: 0, source: trendSource });
+                    accountTrend = await invoke<AccountTrendPoint[]>('get_token_stats_account_trend_daily', { days: 0, source: trendSource });
+                    classicDataPromise = invoke<TokenStatsAggregated[]>('get_token_stats_daily', { days: 0, source });
                     break;
             }
+
+            if (!isCurrent()) return;
 
             // 处理模型趋势数据：提取 Top 5 模型，长尾自动归并到 Other，避免图例过多导致排版杂乱
             const modelsSet = new Set<string>();
@@ -495,7 +584,6 @@ const TokenStats: React.FC = () => {
             const hasOther = sortedModels.length > 5;
             const otherModelKey = t('token_stats.other_models', 'Other Models');
             const displayModelKeys = hasOther ? [...top5Models, otherModelKey] : top5Models;
-            setAllModels(displayModelKeys);
 
             const transformedTrend = modelTrend.map(point => {
                 const row: Record<string, any> = { period: point.period };
@@ -512,7 +600,6 @@ const TokenStats: React.FC = () => {
                 }
                 return row;
             });
-            setModelTrendData(transformedTrend);
 
             // 处理账号趋势数据
             const accountsSet = new Set<string>();
@@ -520,7 +607,6 @@ const TokenStats: React.FC = () => {
                 Object.keys(point.account_data).forEach(acc => accountsSet.add(acc));
             });
             const accountList = Array.from(accountsSet);
-            setAllAccounts(accountList);
 
             const transformedAccountTrend = accountTrend.map(point => {
                 const row: Record<string, any> = { period: point.period };
@@ -529,17 +615,23 @@ const TokenStats: React.FC = () => {
                 });
                 return row;
             });
-            setAccountTrendData(transformedAccountTrend);
 
             // 并行拉取账户统计、模型统计、全局概览、经典看板堆叠数据，以及洞察看板的 91 天热力图与 24 小时柱状图
             const [accounts, models_stats, summaryData, classicData, raw91Days, raw24Hours] = await Promise.all([
-                invoke<AccountTokenStats[]>('get_token_stats_by_account', { hours }),
-                invoke<ModelTokenStats[]>('get_token_stats_by_model', { hours }),
-                invoke<TokenStatsSummary>('get_token_stats_summary', { hours }),
+                invoke<AccountTokenStats[]>('get_token_stats_by_account', { hours, source }),
+                invoke<ModelTokenStats[]>('get_token_stats_by_model', { hours, source }),
+                invoke<TokenStatsSummary>('get_token_stats_summary', { hours, source }),
                 classicDataPromise,
-                invoke<TokenStatsAggregated[]>('get_token_stats_daily', { days: 91 }),
-                invoke<TokenStatsAggregated[]>('get_token_stats_hourly', { hours: 24 }),
+                invoke<TokenStatsAggregated[]>('get_token_stats_daily', { days: 91, source }),
+                invoke<TokenStatsAggregated[]>('get_token_stats_hourly', { hours: 24, source }),
             ]);
+
+            if (!isCurrent()) return;
+
+            setAllModels(displayModelKeys);
+            setModelTrendData(transformedTrend);
+            setAllAccounts(accountList);
+            setAccountTrendData(transformedAccountTrend);
 
             setAccountData(accounts);
             setModelData(models_stats);
@@ -559,7 +651,11 @@ const TokenStats: React.FC = () => {
                 raw91Days.map(d => ({
                     date: d.period,
                     total_tokens: d.total_tokens,
-                    request_count: d.request_count,
+                    request_count: source === 'antigravity'
+                        ? (d.native_generation_count || 0)
+                        : source === 'all'
+                        ? (d.request_count || 0) + (d.native_generation_count || 0)
+                        : d.request_count,
                     total_input_tokens: d.total_input_tokens,
                     total_output_tokens: d.total_output_tokens,
                     total_cached_tokens: d.total_cached_tokens,
@@ -574,40 +670,61 @@ const TokenStats: React.FC = () => {
                     input_tokens: h.total_input_tokens,
                     output_tokens: h.total_output_tokens,
                     cached_tokens: h.total_cached_tokens,
-                    request_count: h.request_count,
+                    request_count: source === 'antigravity'
+                        ? (h.native_generation_count || 0)
+                        : source === 'all'
+                        ? (h.request_count || 0) + (h.native_generation_count || 0)
+                        : h.request_count,
                 }))
             );
         } catch (error) {
-            console.error('Failed to fetch token stats:', error);
+            if (isCurrent()) console.error('Failed to fetch token stats:', error);
         } finally {
-            setLoading(false);
+            if (isCurrent()) setLoading(false);
         }
-    };
+    }, [timeRange, minuteSpan, source, metricType, t]);
 
     useEffect(() => {
         fetchData();
-    }, [timeRange, minuteSpan]);
+    }, [fetchData]);
+
+    useEffect(() => {
+        const timer = window.setInterval(() => {
+            if (!statsPollInFlightRef.current) {
+                statsPollInFlightRef.current = true;
+                void fetchData({ silent: true }).finally(() => {
+                    statsPollInFlightRef.current = false;
+                });
+            }
+            void loadNativeStatus(true);
+        }, 30_000);
+        return () => {
+            window.clearInterval(timer);
+            statsRequestRef.current += 1;
+        };
+    }, [fetchData, loadNativeStatus]);
 
     // 计算单个模型的有效单价 ($ / Token)
     const getModelEffectiveRate = useCallback((modelName: string): number => {
         const stats = modelData.find(m => m.model === modelName);
-        if (stats && stats.total_tokens > 0) {
-            return calculateModelCost(stats) / stats.total_tokens;
+        const tokens = stats && (source === 'all' ? stats.proxy_total_tokens : stats.total_tokens);
+        if (stats && tokens && tokens > 0) {
+            return calculateModelCost(stats) / tokens;
         }
         const p = getPricing(modelName);
         return ((p.input + p.output) / 2) / 1_000_000;
-    }, [modelData, calculateModelCost, getPricing]);
+    }, [modelData, calculateModelCost, getPricing, source]);
 
     // 计算“其他模型”的加权平均单价
     const getOtherModelsEffectiveRate = useCallback((): number => {
         const otherStats = modelData.filter(m => !allModels.includes(m.model) || m.model === t('token_stats.other_models', 'Other Models'));
-        const totalOtherTokens = otherStats.reduce((sum, m) => sum + m.total_tokens, 0);
+        const totalOtherTokens = otherStats.reduce((sum, m) => sum + (source === 'all' ? (m.proxy_total_tokens || 0) : m.total_tokens), 0);
         const totalOtherCost = otherStats.reduce((sum, m) => sum + calculateModelCost(m), 0);
         if (totalOtherTokens > 0) {
             return totalOtherCost / totalOtherTokens;
         }
         return (DEFAULT_PRICING['default'].input + DEFAULT_PRICING['default'].output) / 2 / 1_000_000;
-    }, [modelData, allModels, calculateModelCost, t]);
+    }, [modelData, allModels, calculateModelCost, source, t]);
 
     // 动态根据 metricType ('tokens' | 'cost') 转换模型趋势数据
     const displayModelTrendData = useMemo(() => {
@@ -628,8 +745,9 @@ const TokenStats: React.FC = () => {
     // 动态根据 metricType ('tokens' | 'cost') 转换账号趋势数据
     const displayAccountTrendData = useMemo(() => {
         if (metricType === 'tokens') return accountTrendData;
-        const avgTokenRate = summary && summary.total_tokens > 0
-            ? totalEstimatedCost / summary.total_tokens
+        const tokens = summary && (source === 'all' ? summary.proxy_total_tokens : summary.total_tokens);
+        const avgTokenRate = tokens && tokens > 0
+            ? totalEstimatedCost / tokens
             : 1.5 / 1_000_000;
         return accountTrendData.map(row => {
             const costRow: Record<string, any> = { period: row.period };
@@ -639,7 +757,7 @@ const TokenStats: React.FC = () => {
             });
             return costRow;
         });
-    }, [accountTrendData, metricType, allAccounts, summary, totalEstimatedCost]);
+    }, [accountTrendData, metricType, allAccounts, summary, totalEstimatedCost, source]);
 
     const trendChartContainerRef = useRef<HTMLDivElement>(null);
     const [tooltipPosition, setTooltipPosition] = useState<{ x: number; y: number } | undefined>(undefined);
@@ -719,14 +837,44 @@ const TokenStats: React.FC = () => {
                             </span>
                         </div>
                     ))}
-                    <div className="flex items-center justify-between gap-4 pt-1 border-t border-gray-200 dark:border-white/[0.08]">
-                        <span className="text-gray-500 dark:text-white/60">
-                            {t('token_stats.requests', '请求数')}:
-                        </span>
-                        <span className="font-mono font-medium text-gray-800 dark:text-white">
-                            {(row.request_count || 0).toLocaleString()}
-                        </span>
-                    </div>
+                    {source === 'antigravity' ? (
+                        <div className="flex items-center justify-between gap-4 pt-1 border-t border-gray-200 dark:border-white/[0.08]">
+                            <span className="text-gray-500 dark:text-white/60">
+                                {t('token_stats.model_generations', '模型生成次数')}:
+                            </span>
+                            <span className="font-mono font-medium text-purple-600 dark:text-purple-400">
+                                {(row.native_generation_count || 0).toLocaleString()}
+                            </span>
+                        </div>
+                    ) : source === 'all' ? (
+                        <div className="pt-1 border-t border-gray-200 dark:border-white/[0.08] space-y-0.5">
+                            <div className="flex items-center justify-between gap-4">
+                                <span className="text-gray-500 dark:text-white/60">
+                                    {t('token_stats.proxy_requests', '反代请求')}:
+                                </span>
+                                <span className="font-mono font-medium text-gray-800 dark:text-white">
+                                    {(row.request_count || 0).toLocaleString()}
+                                </span>
+                            </div>
+                            <div className="flex items-center justify-between gap-4">
+                                <span className="text-gray-500 dark:text-white/60">
+                                    {t('token_stats.model_generations', '模型生成次数')}:
+                                </span>
+                                <span className="font-mono font-medium text-purple-600 dark:text-purple-400">
+                                    {(row.native_generation_count || 0).toLocaleString()}
+                                </span>
+                            </div>
+                        </div>
+                    ) : (
+                        <div className="flex items-center justify-between gap-4 pt-1 border-t border-gray-200 dark:border-white/[0.08]">
+                            <span className="text-gray-500 dark:text-white/60">
+                                {t('token_stats.requests', '请求数')}:
+                            </span>
+                            <span className="font-mono font-medium text-gray-800 dark:text-white">
+                                {(row.request_count || 0).toLocaleString()}
+                            </span>
+                        </div>
+                    )}
                 </div>
             </div>
         );
@@ -806,6 +954,62 @@ const TokenStats: React.FC = () => {
                     </div>
 
                     <div className="flex flex-wrap items-center gap-2.5">
+                        {/* 来源筛选药丸: 全部 / 反代 / 反重力原生 */}
+                        <div className="flex bg-gray-100 dark:bg-base-200 border border-gray-200 dark:border-base-300 rounded-xl p-1 shadow-sm">
+                            <button
+                                onClick={() => switchSource('all')}
+                                className={`px-2.5 sm:px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                                    source === 'all'
+                                        ? 'bg-white dark:bg-base-100 text-gray-900 dark:text-base-content shadow-sm font-semibold'
+                                        : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-base-content'
+                                }`}
+                            >
+                                {t('token_stats.source_all', '全部')}
+                            </button>
+                            <button
+                                onClick={() => switchSource('proxy')}
+                                className={`px-2.5 sm:px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                                    source === 'proxy'
+                                        ? 'bg-white dark:bg-base-100 text-blue-600 dark:text-blue-400 shadow-sm font-semibold'
+                                        : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-base-content'
+                                }`}
+                            >
+                                {t('token_stats.source_proxy', '反代')}
+                            </button>
+                            <button
+                                onClick={() => switchSource('antigravity')}
+                                className={`px-2.5 sm:px-3 py-1.5 rounded-lg text-xs font-medium transition-all flex items-center gap-1.5 ${
+                                    source === 'antigravity'
+                                        ? 'bg-white dark:bg-base-100 text-purple-600 dark:text-purple-400 shadow-sm font-semibold'
+                                        : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-base-content'
+                                }`}
+                            >
+                                <Cpu className="w-3.5 h-3.5 text-purple-500" />
+                                {t('token_stats.source_antigravity', '反重力原生')}
+                            </button>
+                        </div>
+
+                        {/* 原生客户端采集状态入口按钮 */}
+                        <button
+                            onClick={() => setShowNativeModal(true)}
+                            title={t('token_stats.native_collector', '反重力原生统计管理')}
+                            className="px-2.5 sm:px-3 py-1.5 rounded-xl bg-white dark:bg-base-200 border border-gray-200 dark:border-base-300 text-xs font-medium text-gray-700 dark:text-gray-300 hover:border-purple-300 dark:hover:border-purple-600 hover:bg-purple-50/50 dark:hover:bg-purple-950/20 transition-all shadow-sm flex items-center gap-1.5"
+                        >
+                            <span className={`w-2 h-2 rounded-full ${
+                                nativeStatus?.enabled
+                                    ? (nativeStatus.unassigned_records > 0 ? 'bg-amber-500 animate-pulse' : 'bg-emerald-500')
+                                    : 'bg-gray-400'
+                            }`} />
+                            <span className="hidden sm:inline">
+                                {t('token_stats.native_source_antigravity_badge', '原生')}
+                            </span>
+                            {nativeStatus && nativeStatus.unassigned_records > 0 && (
+                                <span className="px-1.5 py-0.2 rounded-full text-[10px] font-mono font-bold bg-amber-100 dark:bg-amber-900/50 text-amber-700 dark:text-amber-300">
+                                    {nativeStatus.unassigned_records}
+                                </span>
+                            )}
+                        </button>
+
                         {/* 三看板模式切换器 (Pill Toggle: 赛博大盘 / 深度洞察 / 经典看板) */}
                         <div className="flex bg-gray-100 dark:bg-base-200 border border-gray-200 dark:border-base-300 rounded-xl p-1 shadow-sm">
                             <button
@@ -842,6 +1046,8 @@ const TokenStats: React.FC = () => {
                                 {t('token_stats.mode_classic', '经典看板')}
                             </button>
                         </div>
+
+                        <TokenThroughputBadge throughput={loading ? null : summary?.throughput} />
 
                         {/* 时间段选择药丸 */}
                         <div className="flex bg-gray-100 dark:bg-base-200 border border-gray-200 dark:border-base-300 rounded-xl p-1 shadow-sm">
@@ -939,7 +1145,7 @@ const TokenStats: React.FC = () => {
 
                         {/* 刷新按钮 */}
                         <button
-                            onClick={fetchData}
+                            onClick={() => fetchData()}
                             disabled={loading}
                             className="p-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white transition-colors disabled:opacity-50 shadow-sm shadow-blue-500/20"
                         >
@@ -948,11 +1154,64 @@ const TokenStats: React.FC = () => {
                     </div>
                 </div>
 
+                {/* 反重力原生采集状态条（展示采集起始时间、最近成功扫描时间、未归属量与采集异常状态） */}
+                {(source === 'antigravity' || source === 'all' || nativeStatus?.last_error) && nativeStatus && (
+                    <div className="px-3.5 py-2 rounded-xl bg-purple-50/70 dark:bg-purple-950/20 border border-purple-200/70 dark:border-purple-800/40 flex flex-wrap items-center justify-between gap-x-4 gap-y-1.5 text-[11px] font-mono">
+                        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-gray-600 dark:text-gray-300">
+                            <span className="flex items-center gap-1.5 font-sans font-semibold text-purple-700 dark:text-purple-300">
+                                <span className={`w-2 h-2 rounded-full ${nativeStatus.enabled ? 'bg-emerald-500' : 'bg-gray-400'}`} />
+                                {nativeStatus.enabled
+                                    ? t('token_stats.native_collector_enabled', '原生采集已启用')
+                                    : t('token_stats.native_collector_disabled', '原生采集未启用')}
+                            </span>
+                            <span>
+                                {t('token_stats.native_enabled_since', '采集起始')}:{' '}
+                                <strong className="text-gray-900 dark:text-white">
+                                    {(nativeStatus.enabled_since || nativeStatus.baseline_established_at)
+                                        ? new Date(((nativeStatus.enabled_since || nativeStatus.baseline_established_at) as number) * 1000).toLocaleString()
+                                        : t('token_stats.not_enabled', '未启用')}
+                                </strong>
+                            </span>
+                            <span>
+                                {t('token_stats.native_last_success', '最近成功')}:{' '}
+                                <strong className="text-gray-900 dark:text-white">
+                                    {nativeStatus.last_scanned_at
+                                        ? new Date(nativeStatus.last_scanned_at * 1000).toLocaleString()
+                                        : t('token_stats.never_scanned', '尚未扫描')}
+                                </strong>
+                            </span>
+                            <span className={nativeStatus.unassigned_records > 0 ? 'text-amber-600 dark:text-amber-400 font-semibold' : ''}>
+                                {t('token_stats.native_unassigned', '未归属')}:{' '}
+                                <strong>
+                                    {nativeStatus.unassigned_records} {t('token_stats.records_unit', '条')} / {formatNumber(nativeStatus.unassigned_tokens || 0)} Tokens
+                                </strong>
+                            </span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                            {nativeStatus.last_error && (
+                                <span
+                                    className="px-2 py-0.5 rounded bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 truncate max-w-[280px]"
+                                    title={nativeStatus.last_error}
+                                >
+                                    {t('token_stats.native_error_retained', '采集异常（保留上次结果）')}: {nativeStatus.last_error}
+                                </span>
+                            )}
+                            <button
+                                onClick={() => setShowNativeModal(true)}
+                                className="px-2 py-0.5 rounded-lg bg-purple-600/10 hover:bg-purple-600/20 text-purple-700 dark:text-purple-300 font-sans font-medium transition-colors"
+                            >
+                                {t('token_stats.manage_native_records', '管理归属与明细')}
+                            </button>
+                        </div>
+                    </div>
+                )}
+
                 {/* ==================== 0. 赛博大盘模式 (Cyber Cockpit View) ==================== */}
                 {dashboardMode === 'cockpit' && (
                     <div className="flex-1 min-h-0 overflow-hidden">
                         <CyberCockpitView
                             summary={summary}
+                            source={source}
                             hourlyData={hourlyTrendData}
                             timelineData={classicChartData}
                             modelShareItems={modelShareItems}
@@ -971,6 +1230,7 @@ const TokenStats: React.FC = () => {
                 {dashboardMode === 'insights' && (
                     <AppleBentoView
                         summary={summary}
+                        source={source}
                         dailyData={heatmapData}
                         hourlyData={hourlyTrendData}
                         timelineData={classicChartData}
@@ -1435,7 +1695,9 @@ const TokenStats: React.FC = () => {
                                 {t('token_stats.model_details', '分模型详细统计')}
                             </h2>
                             <span className="text-xs text-gray-400 dark:text-gray-400 font-mono">
-                                {t('token_stats.pricing_snapshot_note', '按照单价快照核算')}
+                                {source === 'antigravity'
+                                    ? t('token_stats.native_cost_unavailable_note', '原生 Token 不换算官方账单或剩余额度')
+                                    : t('token_stats.pricing_snapshot_note', '反代估算费用 · 按照单价快照核算')}
                             </span>
                         </div>
                         <div className="overflow-x-auto">
@@ -1443,13 +1705,19 @@ const TokenStats: React.FC = () => {
                                 <thead>
                                     <tr className="border-b border-gray-200 dark:border-base-200 text-gray-400 dark:text-gray-400 uppercase tracking-wider text-[11px]">
                                         <th className="text-left py-2.5 px-3 font-medium">{t('token_stats.model', '模型')}</th>
-                                        <th className="text-right py-2.5 px-3 font-medium">{t('token_stats.requests', '请求数')}</th>
+                                        <th className="text-right py-2.5 px-3 font-medium">
+                                            {source === 'antigravity'
+                                                ? t('token_stats.model_generations', '模型生成次数')
+                                                : source === 'all'
+                                                ? t('token_stats.requests_and_generations', '反代请求 / 模型生成次数')
+                                                : t('token_stats.requests', '请求数')}
+                                        </th>
                                         <th className="text-right py-2.5 px-3 font-medium">{t('token_stats.input', '输入')}</th>
                                         <th className="text-right py-2.5 px-3 font-medium">{t('token_stats.output', '输出')}</th>
                                         <th className="text-right py-2.5 px-3 font-medium">{t('token_stats.cached_token', '缓存命中')}</th>
                                         <th className="text-right py-2.5 px-3 font-medium">{t('token_stats.total', '合计')}</th>
                                         <th className="text-right py-2.5 px-3 font-medium">{t('token_stats.percentage', '占比')}</th>
-                                        <th className="text-right py-2.5 px-3 font-medium">{t('token_stats.model_cost', '估算费用')}</th>
+                                        <th className="text-right py-2.5 px-3 font-medium">{t('token_stats.proxy_estimated_cost', '反代估算费用')}</th>
                                     </tr>
                                 </thead>
                                 <tbody className="divide-y divide-gray-100 dark:divide-base-200">
@@ -1470,7 +1738,11 @@ const TokenStats: React.FC = () => {
                                                     </div>
                                                 </td>
                                                 <td className="py-2.5 px-3 text-right font-mono text-gray-500 dark:text-gray-400">
-                                                    {model.request_count.toLocaleString()}
+                                                    {source === 'antigravity'
+                                                        ? (model.native_generation_count || 0).toLocaleString()
+                                                        : source === 'all'
+                                                        ? `${model.request_count.toLocaleString()} / ${(model.native_generation_count || 0).toLocaleString()}`
+                                                        : model.request_count.toLocaleString()}
                                                 </td>
                                                 <td className="py-2.5 px-3 text-right font-mono text-blue-600 dark:text-blue-400">
                                                     {formatNumber(model.total_input_tokens)}
@@ -1488,7 +1760,7 @@ const TokenStats: React.FC = () => {
                                                     {percentage}%
                                                 </td>
                                                 <td className="py-2.5 px-3 text-right font-mono font-medium text-emerald-600 dark:text-emerald-400">
-                                                    ${cost.toFixed(2)}
+                                                    {source === 'antigravity' ? t('token_stats.unavailable', '不可用') : `$${cost.toFixed(2)}`}
                                                 </td>
                                             </tr>
                                         );
@@ -1512,7 +1784,13 @@ const TokenStats: React.FC = () => {
                                 <thead>
                                     <tr className="border-b border-gray-200 dark:border-base-200 text-gray-400 dark:text-gray-400 uppercase tracking-wider text-[11px]">
                                         <th className="text-left py-2.5 px-3 font-medium">{t('token_stats.account', '账号')}</th>
-                                        <th className="text-right py-2.5 px-3 font-medium">{t('token_stats.requests', '请求数')}</th>
+                                        <th className="text-right py-2.5 px-3 font-medium">
+                                            {source === 'antigravity'
+                                                ? t('token_stats.model_generations', '模型生成次数')
+                                                : source === 'all'
+                                                ? t('token_stats.requests_and_generations', '反代请求 / 模型生成次数')
+                                                : t('token_stats.requests', '请求数')}
+                                        </th>
                                         <th className="text-right py-2.5 px-3 font-medium">{t('token_stats.input', '输入')}</th>
                                         <th className="text-right py-2.5 px-3 font-medium">{t('token_stats.output', '输出')}</th>
                                         <th className="text-right py-2.5 px-3 font-medium">{t('token_stats.cached_token', '缓存命中')}</th>
@@ -1526,7 +1804,11 @@ const TokenStats: React.FC = () => {
                                                 {account.account_email}
                                             </td>
                                             <td className="py-2.5 px-3 text-right font-mono text-gray-500 dark:text-gray-400">
-                                                {account.request_count.toLocaleString()}
+                                                {source === 'antigravity'
+                                                    ? (account.native_generation_count || 0).toLocaleString()
+                                                    : source === 'all'
+                                                    ? `${account.request_count.toLocaleString()} / ${(account.native_generation_count || 0).toLocaleString()}`
+                                                    : account.request_count.toLocaleString()}
                                             </td>
                                             <td className="py-2.5 px-3 text-right font-mono text-blue-600 dark:text-blue-400">
                                                 {formatNumber(account.total_input_tokens)}
@@ -1559,6 +1841,19 @@ const TokenStats: React.FC = () => {
                             localStorage.setItem(PRICING_STORAGE_KEY, JSON.stringify(newRules));
                         } catch (e) {}
                         setShowPricingModal(false);
+                    }}
+                />
+
+                {/* 反重力客户端原生 Token 统计管理模态框 */}
+                <NativeTokenModal
+                    isOpen={showNativeModal}
+                    onClose={() => {
+                        setShowNativeModal(false);
+                        loadNativeStatus();
+                    }}
+                    onDataChanged={() => {
+                        fetchData();
+                        loadNativeStatus();
                     }}
                 />
             </motion.div>

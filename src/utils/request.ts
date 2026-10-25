@@ -113,6 +113,16 @@ const COMMAND_MAPPING: Record<string, { url: string; method: 'GET' | 'POST' | 'D
   'get_token_stats_account_trend_daily': { url: '/api/stats/token/account-trend/daily', method: 'GET' },
   'clear_token_stats': { url: '/api/stats/token/clear', method: 'POST' },
 
+  // Native Token Stats & Attribution
+  'get_native_collector_status': { url: '/api/stats/native/status', method: 'GET' },
+  'set_native_collector_enabled': { url: '/api/stats/native/toggle', method: 'POST' },
+  'refresh_native_token_stats': { url: '/api/stats/native/refresh', method: 'POST' },
+  'list_native_token_records': { url: '/api/stats/native/records', method: 'GET' },
+  'assign_native_usage_account': { url: '/api/stats/native/assign', method: 'POST' },
+  'unassign_native_usage_account': { url: '/api/stats/native/unassign', method: 'POST' },
+  'batch_assign_native_usage': { url: '/api/stats/native/batch-assign', method: 'POST' },
+  'batch_unassign_native_usage': { url: '/api/stats/native/batch-unassign', method: 'POST' },
+
   // System
   'get_data_dir_path': { url: '/api/system/data-dir', method: 'GET' },
   'get_internal_error_log_path': { url: '/api/system/error-log-path', method: 'GET' },

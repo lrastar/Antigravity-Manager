@@ -2,6 +2,7 @@ use crate::models::AppConfig;
 use crate::modules::{account, config, logger, migration, proxy_db, security_db, token_stats};
 use crate::proxy::TokenManager;
 use axum::{
+    body::Bytes,
     extract::{DefaultBodyLimit, Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{Html, IntoResponse, Json, Response},
@@ -951,6 +952,38 @@ impl AxumServer {
             .route(
                 "/stats/token/account-trend/daily",
                 get(admin_get_token_stats_account_trend_daily),
+            )
+            .route(
+                "/stats/native/status",
+                get(admin_get_native_collector_status),
+            )
+            .route(
+                "/stats/native/toggle",
+                post(admin_set_native_collector_enabled),
+            )
+            .route(
+                "/stats/native/refresh",
+                post(admin_refresh_native_token_stats),
+            )
+            .route(
+                "/stats/native/records",
+                get(admin_list_native_token_records),
+            )
+            .route(
+                "/stats/native/assign",
+                post(admin_assign_native_usage_account),
+            )
+            .route(
+                "/stats/native/unassign",
+                post(admin_unassign_native_usage_account),
+            )
+            .route(
+                "/stats/native/batch-assign",
+                post(admin_batch_assign_native_usage),
+            )
+            .route(
+                "/stats/native/batch-unassign",
+                post(admin_batch_unassign_native_usage),
             )
             .route("/accounts/bulk-delete", post(admin_delete_accounts))
             .route("/accounts/batch-import", post(admin_batch_import_accounts))
@@ -2724,13 +2757,18 @@ struct StatsPeriodQuery {
     hours: Option<i64>,
     days: Option<i64>,
     weeks: Option<i64>,
+    source: Option<String>,
 }
 
 async fn admin_get_token_stats_hourly(
     Query(p): Query<StatsPeriodQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
     let hours = p.hours.unwrap_or(24);
-    let res = tokio::task::spawn_blocking(move || token_stats::get_hourly_stats(hours)).await;
+    let source = p.source;
+    let res = tokio::task::spawn_blocking(move || {
+        token_stats::get_hourly_stats(hours, source.as_deref())
+    })
+    .await;
 
     match res {
         Ok(Ok(stats)) => Ok(Json(stats)),
@@ -2751,7 +2789,11 @@ async fn admin_get_token_stats_daily(
     Query(p): Query<StatsPeriodQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
     let days = p.days.unwrap_or(7);
-    let res = tokio::task::spawn_blocking(move || token_stats::get_daily_stats(days)).await;
+    let source = p.source;
+    let res = tokio::task::spawn_blocking(move || {
+        token_stats::get_daily_stats(days, source.as_deref())
+    })
+    .await;
 
     match res {
         Ok(Ok(stats)) => Ok(Json(stats)),
@@ -2772,7 +2814,11 @@ async fn admin_get_token_stats_weekly(
     Query(p): Query<StatsPeriodQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
     let weeks = p.weeks.unwrap_or(4);
-    let res = tokio::task::spawn_blocking(move || token_stats::get_weekly_stats(weeks)).await;
+    let source = p.source;
+    let res = tokio::task::spawn_blocking(move || {
+        token_stats::get_weekly_stats(weeks, source.as_deref())
+    })
+    .await;
 
     match res {
         Ok(Ok(stats)) => Ok(Json(stats)),
@@ -2793,7 +2839,11 @@ async fn admin_get_token_stats_by_account(
     Query(p): Query<StatsPeriodQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
     let hours = p.hours.unwrap_or(168);
-    let res = tokio::task::spawn_blocking(move || token_stats::get_account_stats(hours)).await;
+    let source = p.source;
+    let res = tokio::task::spawn_blocking(move || {
+        token_stats::get_account_stats(hours, source.as_deref())
+    })
+    .await;
 
     match res {
         Ok(Ok(stats)) => Ok(Json(stats)),
@@ -2814,7 +2864,11 @@ async fn admin_get_token_stats_summary(
     Query(p): Query<StatsPeriodQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
     let hours = p.hours.unwrap_or(168);
-    let res = tokio::task::spawn_blocking(move || token_stats::get_summary_stats(hours)).await;
+    let source = p.source;
+    let res = tokio::task::spawn_blocking(move || {
+        token_stats::get_summary_stats(hours, source.as_deref())
+    })
+    .await;
 
     match res {
         Ok(Ok(stats)) => Ok(Json(stats)),
@@ -2835,7 +2889,11 @@ async fn admin_get_token_stats_by_model(
     Query(p): Query<StatsPeriodQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
     let hours = p.hours.unwrap_or(168);
-    let res = tokio::task::spawn_blocking(move || token_stats::get_model_stats(hours)).await;
+    let source = p.source;
+    let res = tokio::task::spawn_blocking(move || {
+        token_stats::get_model_stats(hours, source.as_deref())
+    })
+    .await;
 
     match res {
         Ok(Ok(stats)) => Ok(Json(stats)),
@@ -2853,9 +2911,12 @@ async fn admin_get_token_stats_by_model(
 }
 
 async fn admin_get_token_stats_model_trend_hourly(
+    Query(p): Query<StatsPeriodQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
-    let res = tokio::task::spawn_blocking(|| {
-        token_stats::get_model_trend_hourly(24) // Default 24 hours
+    let hours = p.hours.unwrap_or(24);
+    let source = p.source;
+    let res = tokio::task::spawn_blocking(move || {
+        token_stats::get_model_trend_hourly(hours, source.as_deref())
     })
     .await;
 
@@ -2875,9 +2936,12 @@ async fn admin_get_token_stats_model_trend_hourly(
 }
 
 async fn admin_get_token_stats_model_trend_daily(
+    Query(p): Query<StatsPeriodQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
-    let res = tokio::task::spawn_blocking(|| {
-        token_stats::get_model_trend_daily(7) // Default 7 days
+    let days = p.days.unwrap_or(7);
+    let source = p.source;
+    let res = tokio::task::spawn_blocking(move || {
+        token_stats::get_model_trend_daily(days, source.as_deref())
     })
     .await;
 
@@ -2897,9 +2961,12 @@ async fn admin_get_token_stats_model_trend_daily(
 }
 
 async fn admin_get_token_stats_account_trend_hourly(
+    Query(p): Query<StatsPeriodQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
-    let res = tokio::task::spawn_blocking(|| {
-        token_stats::get_account_trend_hourly(24) // Default 24 hours
+    let hours = p.hours.unwrap_or(24);
+    let source = p.source;
+    let res = tokio::task::spawn_blocking(move || {
+        token_stats::get_account_trend_hourly(hours, source.as_deref())
     })
     .await;
 
@@ -2919,9 +2986,12 @@ async fn admin_get_token_stats_account_trend_hourly(
 }
 
 async fn admin_get_token_stats_account_trend_daily(
+    Query(p): Query<StatsPeriodQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
-    let res = tokio::task::spawn_blocking(|| {
-        token_stats::get_account_trend_daily(7) // Default 7 days
+    let days = p.days.unwrap_or(7);
+    let source = p.source;
+    let res = tokio::task::spawn_blocking(move || {
+        token_stats::get_account_trend_daily(days, source.as_deref())
     })
     .await;
 
@@ -2940,26 +3010,189 @@ async fn admin_get_token_stats_account_trend_daily(
     }
 }
 
-async fn admin_clear_token_stats() -> impl IntoResponse {
-    let res = tokio::task::spawn_blocking(|| {
-        // Clear databases (brute force)
-        if let Ok(path) = token_stats::get_db_path() {
-            let _ = std::fs::remove_file(path);
-        }
-        let _ = token_stats::init_db();
+#[derive(Deserialize, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+struct ClearTokenStatsBody {
+    source: Option<String>,
+}
+
+fn resolve_clear_stats_source(query: Option<String>, body: Option<String>) -> Result<Option<String>, String> {
+    match (query, body) {
+        (Some(query), Some(body)) if query != body => Err("Conflicting token stats source values".to_string()),
+        (Some(query), _) => Ok(Some(query)),
+        (_, Some(body)) => Ok(Some(body)),
+        (None, None) => Ok(None),
+    }
+}
+
+fn parse_clear_stats_body(body: &[u8]) -> Result<Option<String>, String> {
+    if body.iter().all(u8::is_ascii_whitespace) {
+        return Ok(None);
+    }
+    serde_json::from_slice::<ClearTokenStatsBody>(body)
+        .map(|payload| payload.source)
+        .map_err(|error| format!("Invalid token stats clear JSON body: {error}"))
+}
+
+async fn admin_clear_token_stats(
+    Query(p): Query<StatsPeriodQuery>,
+    body: Bytes,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let body_source = parse_clear_stats_body(&body)
+        .map_err(|error| (StatusCode::BAD_REQUEST, Json(ErrorResponse { error })))?;
+    let source = resolve_clear_stats_source(p.source, body_source)
+        .map_err(|error| (StatusCode::BAD_REQUEST, Json(ErrorResponse { error })))?;
+    if source.as_deref().is_some_and(|source| !matches!(source, "proxy" | "antigravity" | "all")) {
+        return Err((StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "Invalid token stats source".to_string() })));
+    }
+    let res = tokio::task::spawn_blocking(move || {
+        token_stats::clear_stats(source.as_deref())
     })
     .await;
 
     match res {
-        Ok(_) => {
-            logger::log_info("[API] 已清除所有 Token 统计数据");
-            StatusCode::OK
+        Ok(Ok(_)) => {
+            logger::log_info("[API] 已清除 Token 统计数据");
+            Ok(StatusCode::OK)
+        }
+        Ok(Err(e)) => {
+            logger::log_error(&format!("[API] 清除 Token 统计数据失败: {}", e));
+            Err((StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e })))
         }
         Err(e) => {
             logger::log_error(&format!("[API] 清除 Token 统计数据失败: {}", e));
-            StatusCode::INTERNAL_SERVER_ERROR
+            Err((StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e.to_string() })))
         }
     }
+}
+
+async fn admin_get_native_collector_status() -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let res = tokio::task::spawn_blocking(crate::modules::native_token::get_status)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e.to_string() })))?
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e })))?;
+    Ok(Json(res))
+}
+
+#[derive(serde::Deserialize)]
+struct SetCollectorEnabledRequest {
+    enabled: bool,
+}
+
+async fn admin_set_native_collector_enabled(
+    Json(payload): Json<SetCollectorEnabledRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let res = tokio::task::spawn_blocking(move || crate::modules::native_token::set_enabled(payload.enabled))
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e.to_string() })))?
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e })))?;
+    Ok(Json(res))
+}
+
+async fn admin_refresh_native_token_stats() -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let res = tokio::task::spawn_blocking(crate::modules::native_token::scan_native_conversations)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e.to_string() })))?
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e })))?;
+    Ok(Json(res))
+}
+
+#[derive(serde::Deserialize)]
+struct ListNativeRecordsQuery {
+    limit: Option<i64>,
+    offset: Option<i64>,
+    search: Option<String>,
+}
+
+async fn admin_list_native_token_records(
+    Query(p): Query<ListNativeRecordsQuery>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let limit = p.limit.unwrap_or(50);
+    let offset = p.offset.unwrap_or(0);
+    let search = p.search;
+    let res = tokio::task::spawn_blocking(move || {
+        crate::modules::native_token::list_native_records(limit, offset, search)
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e.to_string() })))?
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e })))?;
+    Ok(Json(res))
+}
+
+#[derive(serde::Deserialize)]
+struct AssignNativeAccountRequest {
+    #[serde(alias = "recordKey")]
+    record_key: String,
+    #[serde(alias = "accountEmail")]
+    account_email: String,
+}
+
+async fn admin_assign_native_usage_account(
+    Json(payload): Json<AssignNativeAccountRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    tokio::task::spawn_blocking(move || {
+        crate::modules::native_token::assign_record_account(&payload.record_key, &payload.account_email)
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e.to_string() })))?
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e })))?;
+    Ok(StatusCode::OK)
+}
+
+#[derive(serde::Deserialize)]
+struct UnassignNativeAccountRequest {
+    #[serde(alias = "recordKey")]
+    record_key: String,
+}
+
+async fn admin_unassign_native_usage_account(
+    Json(payload): Json<UnassignNativeAccountRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    tokio::task::spawn_blocking(move || {
+        crate::modules::native_token::unassign_record_account(&payload.record_key)
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e.to_string() })))?
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e })))?;
+    Ok(StatusCode::OK)
+}
+
+#[derive(serde::Deserialize)]
+struct BatchAssignNativeRequest {
+    #[serde(alias = "recordKeys")]
+    record_keys: Vec<String>,
+    #[serde(alias = "accountEmail")]
+    account_email: String,
+}
+
+async fn admin_batch_assign_native_usage(
+    Json(payload): Json<BatchAssignNativeRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    tokio::task::spawn_blocking(move || {
+        crate::modules::native_token::batch_assign_record_account(&payload.record_keys, &payload.account_email)
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e.to_string() })))?
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e })))?;
+    Ok(StatusCode::OK)
+}
+
+#[derive(serde::Deserialize)]
+struct BatchUnassignNativeRequest {
+    #[serde(alias = "recordKeys")]
+    record_keys: Vec<String>,
+}
+
+async fn admin_batch_unassign_native_usage(
+    Json(payload): Json<BatchUnassignNativeRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    tokio::task::spawn_blocking(move || {
+        crate::modules::native_token::batch_unassign_record_account(&payload.record_keys)
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e.to_string() })))?
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e })))?;
+    Ok(StatusCode::OK)
 }
 
 async fn admin_get_update_settings() -> impl IntoResponse {
@@ -5027,5 +5260,22 @@ mod image_scheduler_tests {
         let listener_v6 = super::bind_tcp_listener("::", port)
             .expect("wildcard v6 dual-stack bind should succeed");
         drop(listener_v6);
+    }
+}
+
+#[cfg(test)]
+mod clear_token_stats_tests {
+    use super::{parse_clear_stats_body, resolve_clear_stats_source};
+
+    #[test]
+    fn clear_source_accepts_json_query_and_empty_legacy_request_safely() {
+        assert_eq!(resolve_clear_stats_source(None, Some("proxy".into())).unwrap().as_deref(), Some("proxy"));
+        assert_eq!(resolve_clear_stats_source(Some("antigravity".into()), None).unwrap().as_deref(), Some("antigravity"));
+        assert_eq!(resolve_clear_stats_source(None, None).unwrap(), None);
+        assert!(resolve_clear_stats_source(Some("proxy".into()), Some("all".into())).is_err());
+        assert_eq!(parse_clear_stats_body(br#"{"source":"antigravity"}"#).unwrap().as_deref(), Some("antigravity"));
+        assert_eq!(parse_clear_stats_body(b"  ").unwrap(), None);
+        assert!(parse_clear_stats_body(br#"{"source":"all""#).is_err());
+        assert_eq!(resolve_clear_stats_source(None, Some("all".into())).unwrap().as_deref(), Some("all"));
     }
 }
