@@ -1,6 +1,9 @@
 name: Build macOS Intel Package
 
 on:
+  push:
+    tags:
+      - "macos-intel-build-*"
   workflow_dispatch:
     inputs:
       source_ref:
@@ -26,7 +29,7 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.source_ref }}
+          ref: ${{ github.event.inputs.source_ref || 'build-20261026-74879e0' }}
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -79,7 +82,7 @@ jobs:
         uses: ncipollo/release-action@v1
         with:
           allowUpdates: true
-          tag: ${{ inputs.release_tag }}
+          tag: ${{ github.event.inputs.release_tag || 'build-20261026-74879e0' }}
           name: "Antigravity Tools 自改版 ${{ steps.package.outputs.version }} · Windows x64 + macOS Intel x64"
           body: |
             基于源码提交 `74879e0` 的 Antigravity Tools 自改构建，应用版本为 5.0.0。
