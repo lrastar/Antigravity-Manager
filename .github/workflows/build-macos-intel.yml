@@ -1,0 +1,95 @@
+name: Build macOS Intel Package
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Source tag or commit to build
+        required: true
+        default: build-20261026-74879e0
+      release_tag:
+        description: Existing GitHub Release tag to update
+        required: true
+        default: build-20261026-74879e0
+
+permissions:
+  contents: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  build-macos-intel:
+    name: Build macOS Intel x64 DMG
+    runs-on: macos-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm install --legacy-peer-deps
+
+      - name: Disable updater artifacts without signing key
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "Updater signing key is configured; keeping updater artifacts enabled."
+          else
+            node -e 'const fs=require("fs"); const p="src-tauri/tauri.conf.json"; const c=JSON.parse(fs.readFileSync(p,"utf8")); c.bundle.createUpdaterArtifacts=false; fs.writeFileSync(p, JSON.stringify(c,null,2)+"\n");'
+            echo "No updater signing key configured; disabled updater artifacts for this build."
+          fi
+
+      - name: Build macOS Intel DMG
+        run: npm run tauri build -- --target x86_64-apple-darwin --bundles dmg
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      - name: Prepare package and checksum
+        id: package
+        shell: bash
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          DMG_PATH=$(find "src-tauri/target/x86_64-apple-darwin/release/bundle/dmg" -maxdepth 1 -name '*.dmg' -print -quit)
+          if [ -z "$DMG_PATH" ]; then
+            echo "No Intel DMG was produced; refusing to publish an empty release."
+            exit 1
+          fi
+          mkdir -p release-assets
+          ASSET="Antigravity-Tools_${VERSION}_macOS_Intel_x64.dmg"
+          cp "$DMG_PATH" "release-assets/$ASSET"
+          shasum -a 256 "release-assets/$ASSET" > "release-assets/SHA256SUMS-macOS-Intel.txt"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Add macOS Intel package to the release
+        uses: ncipollo/release-action@v1
+        with:
+          allowUpdates: true
+          tag: ${{ inputs.release_tag }}
+          name: "Antigravity Tools 自改版 ${{ steps.package.outputs.version }} · Windows x64 + macOS Intel x64"
+          body: |
+            基于源码提交 `74879e0` 的 Antigravity Tools 自改构建，应用版本为 5.0.0。
+
+            - Windows x64 安装包：`Antigravity-Manager-Setup.exe`
+            - macOS Intel x64 安装镜像：`Antigravity-Tools_5.0.0_macOS_Intel_x64.dmg`
+            - `SHA256SUMS.txt` 与 `SHA256SUMS-macOS-Intel.txt` 分别提供对应安装包的 SHA-256 校验值。
+            - 此版本为预发布版；尚未完成 macOS 安装后的实机验收。应用内更新地址仍指向上游。
+          artifacts: "release-assets/*"
+          artifactErrorsFailBuild: true
+          replacesArtifacts: false
+          prerelease: true
+          makeLatest: false
