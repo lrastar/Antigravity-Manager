@@ -6,6 +6,7 @@ on:
       - beta
       - main
       - codex/native-token-throughput-ui
+      - codex/usage-statistics-refactor
   workflow_dispatch:
     inputs:
       create_release:

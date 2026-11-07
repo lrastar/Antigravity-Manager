@@ -2,18 +2,20 @@ name: Build macOS Intel Package
 
 on:
   push:
+    branches:
+      - codex/usage-statistics-refactor
     tags:
       - "macos-intel-build-*"
   workflow_dispatch:
     inputs:
       source_ref:
         description: Source tag or commit to build
-        required: true
-        default: build-20261026-74879e0
+        required: false
+        default: ''
       release_tag:
         description: Existing GitHub Release tag to update
-        required: true
-        default: build-20261026-74879e0
+        required: false
+        default: ''
 
 permissions:
   contents: write
@@ -29,7 +31,7 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.source_ref || 'build-20261026-74879e0' }}
+          ref: ${{ github.event.inputs.source_ref || github.sha }}
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -78,19 +80,25 @@ jobs:
           shasum -a 256 "release-assets/$ASSET" > "release-assets/SHA256SUMS-macOS-Intel.txt"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
+      - name: Upload macOS Intel package
+        uses: actions/upload-artifact@v4
+        with:
+          name: Antigravity-Manager-macOS-Intel
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 30
+
       - name: Add macOS Intel package to the release
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != ''
         uses: ncipollo/release-action@v1
         with:
           allowUpdates: true
-          tag: ${{ github.event.inputs.release_tag || 'build-20261026-74879e0' }}
+          tag: ${{ github.event.inputs.release_tag }}
           name: "Antigravity Tools 自改版 ${{ steps.package.outputs.version }} · Windows x64 + macOS Intel x64"
+          omitBodyDuringUpdate: true
           body: |
-            基于源码提交 `74879e0` 的 Antigravity Tools 自改构建，应用版本为 5.0.0。
-
-            - Windows x64 安装包：`Antigravity-Manager-Setup.exe`
-            - macOS Intel x64 安装镜像：`Antigravity-Tools_5.0.0_macOS_Intel_x64.dmg`
-            - `SHA256SUMS.txt` 与 `SHA256SUMS-macOS-Intel.txt` 分别提供对应安装包的 SHA-256 校验值。
-            - 此版本为预发布版；尚未完成 macOS 安装后的实机验收。应用内更新地址仍指向上游。
+            macOS Intel x64 自改构建，应用版本 ${{ steps.package.outputs.version }}。
+            校验文件：SHA256SUMS-macOS-Intel.txt。尚未进行 Mac 实机安装验证。
           artifacts: "release-assets/*"
           artifactErrorsFailBuild: true
           replacesArtifacts: false
