@@ -1371,7 +1371,9 @@ mod tests {
                  INSERT INTO native_token_usage VALUES
                     (150, 'account-b', 'alpha', 400, 100, 50, 900, 1450, 40, 'auto', 3000),
                     (160, '', 'untimed', 20, 30, 0, 0, 50, 0, 'unassigned', NULL),
-                    (200, 'outside', 'outside', 90000, 0, 0, 90000, 180000, 0, 'auto', 1);",
+                    (200, 'outside', 'outside', 90000, 0, 0, 90000, 180000, 0, 'auto', 1);
+                 ALTER TABLE token_usage ADD COLUMN requested_model TEXT;
+                 ALTER TABLE token_usage ADD COLUMN ttft_ms REAL;",
         )
         .unwrap();
 
@@ -1468,7 +1470,11 @@ mod tests {
             "CREATE TABLE token_usage (timestamp INTEGER, account_email TEXT, model TEXT, input_tokens INTEGER, output_tokens INTEGER, cached_tokens INTEGER, total_tokens INTEGER, reasoning_tokens INTEGER);
              CREATE TABLE native_token_usage (timestamp INTEGER, account_email TEXT, model TEXT, input_tokens INTEGER, cached_tokens INTEGER, cache_write_tokens INTEGER, output_tokens INTEGER, total_tokens INTEGER, reasoning_tokens INTEGER, attribution_type TEXT);
              INSERT INTO token_usage VALUES (100, 'proxy', 'gpt-test', 10, 2, 1, 12, 0);
-             INSERT INTO native_token_usage VALUES (100, 'native', 'gemini-test', 20, 3, 4, 5, 32, 1, 'auto');",
+             INSERT INTO native_token_usage VALUES (100, 'native', 'gemini-test', 20, 3, 4, 5, 32, 1, 'auto');
+             ALTER TABLE token_usage ADD COLUMN requested_model TEXT;
+             ALTER TABLE token_usage ADD COLUMN ttft_ms REAL;
+             ALTER TABLE token_usage ADD COLUMN duration_ms REAL;
+             ALTER TABLE native_token_usage ADD COLUMN duration_ms REAL;",
         ).unwrap();
         let sum_for = |source| {
             let sql = format!("SELECT COALESCE(SUM(total_tokens), 0) FROM {}", make_usage_subquery(source).unwrap());
