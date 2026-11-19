@@ -31,7 +31,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -62,7 +62,7 @@ jobs:
           workspaces: "src-tauri"
 
       - name: Node.js setup
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 20
           cache: "npm"
@@ -114,7 +114,7 @@ jobs:
           $files | ForEach-Object { Write-Host " - $($_.Name) ($($_.Length) bytes)" }
 
       - name: Upload Windows Executable Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: Antigravity-Manager-Windows-Installer
           path: dist-artifacts/*
