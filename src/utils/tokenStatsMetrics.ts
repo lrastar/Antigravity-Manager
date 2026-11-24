@@ -60,7 +60,14 @@ export function resolveModelPricing(model: string, pricing: Record<string, Token
         const escaped = pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         return new RegExp(`(?:^|[/.:_-])${escaped}(?:$|[-:@/\\[])`).test(key);
     });
-    return match?.[1] ?? pricing.default ?? fallback;
+    if (match) return match[1];
+    // Family rules such as gemini-flash allow version segments between provider and family.
+    const familyMatch = entries.find(([pattern]) => {
+        const parts = pattern.split('-').map(part => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+        if (parts.length < 2) return false;
+        return new RegExp(`(?:^|[/.:_-])${parts.join('(?:-[a-z0-9]+)*-')}(?:$|[-:@/\\[])`).test(key);
+    });
+    return familyMatch?.[1] ?? pricing.default ?? fallback;
 }
 
 export function estimateTokenCost(metrics: Pick<TokenUsageMetrics, 'inputTokens' | 'outputTokens' | 'cachedTokens'>, pricing: TokenPricing): number {

@@ -6,6 +6,10 @@ use serde::{Deserialize, Serialize};
 pub struct TokenThroughputSummary {
     pub tokens_per_second: Option<f64>,
     pub timed_generations: u64,
+    #[serde(default)]
+    pub timed_output_tokens: u64,
+    #[serde(default)]
+    pub total_duration_ms: f64,
 }
 
 pub fn tokens_per_second(output_tokens: u64, duration_ms: Option<f64>) -> Option<f64> {
@@ -57,6 +61,8 @@ pub fn summarize_range(
     Ok(TokenThroughputSummary {
         tokens_per_second: tokens_per_second(output_tokens, Some(duration_ms)),
         timed_generations: count,
+        timed_output_tokens: output_tokens,
+        total_duration_ms: duration_ms,
     })
 }
 
@@ -104,6 +110,8 @@ pub fn summarize_models(
                 TokenThroughputSummary {
                     tokens_per_second: tokens_per_second(output, Some(duration)),
                     timed_generations: count,
+                    timed_output_tokens: output,
+                    total_duration_ms: duration,
                 },
             )
         })
@@ -130,6 +138,8 @@ mod tests {
         assert_eq!(native.tokens_per_second, Some(300.0));
         assert_eq!(all.tokens_per_second, Some(250.0));
         assert_eq!(all.timed_generations, 2);
+        assert_eq!(all.timed_output_tokens, 1000);
+        assert_eq!(all.total_duration_ms, 4000.0);
         assert_eq!(summarize(&conn, 200, None).unwrap().tokens_per_second, None);
         assert!(summarize(&conn, 0, Some("invalid")).is_err());
     }
@@ -155,6 +165,8 @@ mod tests {
         let rates = summarize_models(&conn, 100, 200, Some("all")).unwrap();
         assert_eq!(rates["a"].tokens_per_second, Some(250.0));
         assert_eq!(rates["a"].timed_generations, 2);
+        assert_eq!(rates["a"].timed_output_tokens, 1000);
+        assert_eq!(rates["a"].total_duration_ms, 4000.0);
         assert_eq!(rates["b"].tokens_per_second, Some(500.0));
         assert!(!rates.contains_key("untimed"));
         assert_eq!(

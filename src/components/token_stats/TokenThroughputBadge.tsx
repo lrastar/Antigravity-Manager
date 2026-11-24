@@ -4,6 +4,8 @@ import { Gauge } from 'lucide-react';
 export interface TokenThroughputSummary {
     tokens_per_second: number | null;
     timed_generations: number;
+    timed_output_tokens?: number;
+    total_duration_ms?: number;
 }
 
 export function formatTokenSpeed(value?: number | null): string {
